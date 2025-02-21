@@ -1,0 +1,268 @@
+---
+title: "Analysis"
+format: html
+editor: visual
+---
+
+### ============================================================
+
+### Analysis Script
+
+### This script performs regression analysis and climate scenario simulations:
+
+### - Using retrieved pastureland and cattle inventory data estimate stocking rates
+
+### - Estimate regression model
+
+### - Simulates future stocking rates under different climate scenarios
+
+### ============================================================
+
+### 1. Estimate Stocking Rates
+
+```{r}
+
+# Assumptions
+dressing_pct <- 0.55
+AU <- 1000
+grazing_months <- 5 
+
+# Merge pasturepand and inventory data
+merged_ALL <- left_join(pasture_data_ALL, beef_inv, by = c("year", "state", "county")) 
+
+# Estimate Stocking rates
+merged_ALL_SR <- left_join(merged_ALL, cattle_weight, by = c("year")) %>% 
+  mutate(stock_rate = (beef_inv * mean_live_wt/AU * grazing_months)/pastureland_all_types) %>% 
+  dplyr::filter(year != 1978) %>% 
+  dplyr::select(year, state, county, stock_rate) %>% 
+  na.omit()
+
+```
+
+### 2. Estimate regression model
+
+```{r}
+
+
+SR_data <- merged_ALL_SR
+joined_drought_hay <- left_join(yearly_drought_data, hay_all_stocks_1000t_national, by = c("year")) 
+
+regression_data <- left_join(joined_drought_hay, SR_data, by = c("year", "state", "county")) 
+regression_data <- regression_data[!is.infinite(regression_data$stock_rate), ]
+
+# get lagged D values
+regression_data_lagged <- regression_data %>%
+  arrange(state, county, year) %>% # Ensure data is sorted by state, county, and year
+  group_by(state, county) %>% # Group by state and county
+  mutate(
+    drought_lag1 = lag(total_D, 1), # 1-year lag
+    drought_lag2 = lag(total_D, 2), # 2-year lag
+    drought_lag3 = lag(total_D, 3), # 3-year lag
+    drought_lag4 = lag(total_D, 4), # 4-year lag
+    drought_lag5 = lag(total_D, 5)  # 5-year lag
+  ) %>%
+  ungroup() %>% 
+  na.omit()
+ 
+
+#### 5 LAGS #####
+pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3", "drought_lag4", "drought_lag5")], scale. = TRUE)
+regression_data_lagged$pca1 <- pca$x[, 1]
+
+reg_5 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county, data = regression_data_lagged)
+reg_5
+
+```
+
+### 3. Estimate projected stockign rates
+
+```{r}
+
+## Projected Hay Stocks
+state_names <- c(
+  AL = "Alabama", AK = "Alaska", AZ = "Arizona", AR = "Arkansas", CA = "California", 
+  CO = "Colorado", CT = "Connecticut", DE = "Delaware", FL = "Florida", GA = "Georgia", 
+  HI = "Hawaii", ID = "Idaho", IL = "Illinois", IN = "Indiana", IA = "Iowa", 
+  KS = "Kansas", KY = "Kentucky", LA = "Louisiana", ME = "Maine", MD = "Maryland", 
+  MA = "Massachusetts", MI = "Michigan", MN = "Minnesota", MS = "Mississippi", 
+  MO = "Missouri", MT = "Montana", NE = "Nebraska", NV = "Nevada", NH = "New Hampshire", 
+  NJ = "New Jersey", NM = "New Mexico", NY = "New York", NC = "North Carolina", 
+  ND = "North Dakota", OH = "Ohio", OK = "Oklahoma", OR = "Oregon", PA = "Pennsylvania", 
+  RI = "Rhode Island", SC = "South Carolina", SD = "South Dakota", TN = "Tennessee", 
+  TX = "Texas", UT = "Utah", VT = "Vermont", VA = "Virginia", WA = "Washington", 
+  WV = "West Virginia", WI = "Wisconsin", WY = "Wyoming"
+)
+
+# All hat stocks, 1000 tones
+hay_all_stocks_1000t <- readxl::read_xlsx("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/RobustnessCheck/Data/StateHaySupplies.xlsx", sheet = 2, skip = 2)
+
+hay_all_stocks_1000t_2 <- pivot_longer(hay_all_stocks_1000t, cols = -year, names_to = "state", values_to = "hay_stock_1000t") %>% 
+  mutate(state = state_names[state])
+
+hay_all_stocks_1000t_2$state <- tolower(hay_all_stocks_1000t_2$state)
+
+hay_all_stocks_1000t_3 <- hay_all_stocks_1000t_2 %>%
+  group_by(state) %>%
+  mutate(hay_stock_1000t = dplyr::lead(hay_stock_1000t, n = 1)) %>%  # Use lag with negative `n` to act like lead
+  ungroup()
+
+hay_all_stocks_1000t_national <- hay_all_stocks_1000t_3 %>% 
+  group_by(year) %>% 
+  summarize(hay_stock_1000t = mean(hay_stock_1000t, na.rm = TRUE)) 
+
+
+# Calculate the last 5-year average of non-NA values
+last_5_years_avg <- hay_all_stocks_1000t_national %>%
+  filter(!is.na(hay_stock_1000t)) %>%
+  tail(5) %>%
+  summarise(avg = mean(hay_stock_1000t, na.rm = TRUE)) %>%
+  pull(avg)
+
+# Create a sequence of missing years (2023 to 2099)
+missing_years <- tibble(
+  year = 2023:2099,
+  hay_stock_1000t = last_5_years_avg
+)
+
+# Combine the original data with the missing years
+hay_all_stocks_1000t_national_projected <- hay_all_stocks_1000t_national %>%
+  bind_rows(missing_years) %>%
+  arrange(year)
+
+
+# Projecting Stocking Density 
+# 4.5
+drought_data_4.5 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/drought_4.5_ALL.rds")
+growing_season_data_4.5 <- drought_data_4.5 %>%
+  filter(month >= 3 & month <= 10)  # Select only March to October
+
+# Aggregate to yearly level
+yearly_drought_data_projected_4.5 <- growing_season_data_4.5 %>%
+  group_by(year, STATE_NAME, NAME) %>%  # Group by year, state, and county
+  summarize(
+    total_D = sum(monthly_D, na.rm = TRUE),  # Total drought index
+    total_GDD = sum(monthly_GDD, na.rm = TRUE),  # Total Growing Degree Days
+    total_EDD = sum(monthly_EDD, na.rm = TRUE)  # Total Extreme Degree Days
+  ) %>% 
+  rename(state = STATE_NAME,
+         county = NAME) %>% 
+  dplyr::select(year, state, county, total_D, total_GDD, total_EDD)
+
+yearly_drought_data_projected_4.5$state <- tolower(yearly_drought_data_projected_4.5$state)
+yearly_drought_data_projected_4.5$county <- tolower(yearly_drought_data_projected_4.5$county)
+
+joined_drought_hay_projected_4.5 <- left_join(yearly_drought_data_projected_4.5, hay_all_stocks_1000t_national_projected, by = c("year")) 
+
+# get lagged D values
+regression_data_lagged_4.5 <- joined_drought_hay_projected_4.5 %>%
+  arrange(state, county, year) %>% # Ensure data is sorted by state, county, and year
+  group_by(state, county) %>% # Group by state and county
+  mutate(
+    drought_lag1 = lag(total_D, 1), # 1-year lag
+    drought_lag2 = lag(total_D, 2), # 2-year lag
+    drought_lag3 = lag(total_D, 3), # 3-year lag
+    drought_lag4 = lag(total_D, 4), # 4-year lag
+    drought_lag5 = lag(total_D, 5)  # 5-year lag
+  ) %>%
+  ungroup() %>% 
+  na.omit()
+
+#### 5 LAGS #####
+pca <- prcomp(regression_data_lagged_4.5[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3", "drought_lag4", "drought_lag5")], scale. = TRUE)
+regression_data_lagged_4.5$pca1 <- pca$x[, 1]
+
+Projected_45 <- predict(reg_5, newdata = regression_data_lagged_4.5)
+setDT(regression_data_lagged_4.5)
+regression_data_lagged_4.5[, log_stock_rate := Projected_45]
+Projected_SR_45 <- regression_data_lagged_4.5[, stock_rate := exp(log_stock_rate)]
+
+
+# 8.5
+drought_data_8.5 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/drought_8.5_ALL.rds")
+growing_season_data_8.5 <- drought_data_8.5 %>%
+  filter(month >= 3 & month <= 10)  # Select only March to October
+
+# Aggregate to yearly level
+yearly_drought_data_projected_8.5 <- growing_season_data_8.5 %>%
+  group_by(year, STATE_NAME, NAME) %>%  # Group by year, state, and county
+  summarize(
+    total_D = sum(monthly_D, na.rm = TRUE),  # Total drought index
+    total_GDD = sum(monthly_GDD, na.rm = TRUE),  # Total Growing Degree Days
+    total_EDD = sum(monthly_EDD, na.rm = TRUE)  # Total Extreme Degree Days
+  ) %>% 
+  rename(state = STATE_NAME,
+         county = NAME) %>% 
+  dplyr::select(year, state, county, total_D, total_GDD, total_EDD)
+
+yearly_drought_data_projected_8.5$state <- tolower(yearly_drought_data_projected_8.5$state)
+yearly_drought_data_projected_8.5$county <- tolower(yearly_drought_data_projected_8.5$county)
+
+joined_drought_hay_projected_8.5 <- left_join(yearly_drought_data_projected_8.5, hay_all_stocks_1000t_national_projected, by = c("year")) 
+
+# get lagged D values
+regression_data_lagged_8.5 <- joined_drought_hay_projected_8.5 %>%
+  arrange(state, county, year) %>% # Ensure data is sorted by state, county, and year
+  group_by(state, county) %>% # Group by state and county
+  mutate(
+    drought_lag1 = lag(total_D, 1), # 1-year lag
+    drought_lag2 = lag(total_D, 2), # 2-year lag
+    drought_lag3 = lag(total_D, 3), # 3-year lag
+    drought_lag4 = lag(total_D, 4), # 4-year lag
+    drought_lag5 = lag(total_D, 5)  # 5-year lag
+  ) %>%
+  ungroup() %>% 
+  na.omit()
+
+#### 5 LAGS #####
+pca <- prcomp(regression_data_lagged_8.5[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3", "drought_lag4", "drought_lag5")], scale. = TRUE)
+regression_data_lagged_8.5$pca1 <- pca$x[, 1]
+
+Projected_85 <- predict(reg_5, newdata = regression_data_lagged_8.5)
+setDT(regression_data_lagged_8.5)
+regression_data_lagged_8.5[, log_stock_rate := Projected_85]
+Projected_SR_85 <- regression_data_lagged_8.5[, stock_rate := exp(log_stock_rate)]
+
+# Calculate yearly means for both scenarios 
+yearly_data_45 <- Projected_SR_45 %>%
+  group_by(year) %>%
+  summarise(mean_projected_stock_rate = mean(stock_rate, na.rm = TRUE)) %>%
+  mutate(scenario = "RCP 4.5")  %>% 
+  dplyr::filter(year >= 2020)
+
+yearly_data_85 <- Projected_SR_85 %>%
+  group_by(year) %>%
+  summarise(mean_projected_stock_rate = mean(stock_rate, na.rm = TRUE)) %>%
+  mutate(scenario = "RCP 8.5")  %>% 
+  dplyr::filter(year >= 2020)
+
+saveRDS(yearly_data_45, file.path("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/Projected_SR_4.5.rds"))
+saveRDS(yearly_data_85, file.path("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/Projected_SR_8.5.rds"))
+
+
+# Combining projected Stocking Rates
+
+GCM_1_4.5 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/1/Projected_SR_4.5.rds")
+GCM_2_4.5 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/Projected_SR_4.5.rds")
+
+average_4.5 <- left_join(GCM_1_4.5, GCM_2_4.5, by = c("year", "scenario")) 
+average_4.5$average_SR <- rowMeans(average_4.5[, c("mean_projected_stock_rate.x", "mean_projected_stock_rate.y")], na.rm = TRUE)
+
+
+GCM_1_8.5 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/1/Projected_SR_8.5.rds")
+GCM_2_8.5 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/Projected_SR_8.5.rds")
+
+average_8.5 <- left_join(GCM_1_8.5, GCM_2_8.5, by = c("year", "scenario")) 
+average_8.5$average_SR <- rowMeans(average_8.5[, c("mean_projected_stock_rate.x", "mean_projected_stock_rate.y")], na.rm = TRUE)
+
+
+# Combine the datasets
+combined_data <- bind_rows(average_4.5, average_8.5)
+
+# Apply moving average smoothing
+combined_data <- combined_data %>%
+  arrange(year) %>%
+  group_by(scenario) %>%
+  mutate(smoothed_SR = rollmean(average_SR, k = 5, fill = NA, align = "center"))
+
+
+```

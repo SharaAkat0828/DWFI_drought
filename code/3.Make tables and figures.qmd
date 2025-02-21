@@ -1,0 +1,276 @@
+---
+title: "Tables and Figures"
+format: html
+editor: visual
+---
+
+### ============================================================
+
+### Visualization and Results
+
+### This script generates figures and tables for the paper:
+
+### - Figure 1. Annual US national beef cow inventory and pastureland data.
+
+### - Figure 2. Projected cattle stocking rates (2020-2099).
+
+### - Table 1. Summarizes key statistics for interpretation.
+
+### - Table 2. Main regression analysis results.
+
+### - Table 3. Regression analysis results for all lagged (1-5) effects.
+
+### ============================================================
+
+# Figure 1. Annual US national beef cow inventory and pastureland data.
+
+```{r}
+
+# Create ANNUAL pastureland and cattle inventory data - ALL US
+pasture_data_ALL_US <- pasture_data_ALL %>% 
+  group_by(year) %>%
+  summarise(
+    total_pastureland_all_types = sum(pastureland_all_types, na.rm = TRUE)
+  )
+
+beef_inv_total_US <- beef_inv %>% 
+  group_by(year) %>%
+  summarise(
+    beef_inv = sum(beef_inv, na.rm = TRUE)
+  )
+
+merged_ALL_national <- left_join(pasture_data_ALL_US, beef_inv_total_US, by = c("year"))
+
+merged_ALL_national$beef_inv <- merged_ALL_national$beef_inv/1000000
+merged_ALL_national$total_pastureland_all_types <- merged_ALL_national$total_pastureland_all_types/1000000
+scaling_factor <- max(merged_ALL_national$total_pastureland_all_types) / max(merged_ALL_national$beef_inv)
+
+
+# FIGURE 1
+ggplot() +
+  geom_line(data = merged_ALL_national, aes(x = year, y = beef_inv, color = "Beef cow inventory, head")) +  # Assign legend label
+  geom_line(data = merged_ALL_national, aes(x = year, y = total_pastureland_all_types / scaling_factor, color = "Pastureland (all), acres")) +  # Assign legend label and scaling factor
+  xlab("Year") + 
+  theme_bw() + 
+  labs(title = "") + 
+  # ylab("Steer, live finishing weight (lbs)") +
+  scale_x_continuous(breaks = seq(min(merged_ALL_national$year), max(merged_ALL_national$year), by = 5)) +  # Show year as numeric on x-axis
+  scale_y_continuous(
+    name = "Beef cow inventory, head (mln)",
+    sec.axis = sec_axis(~ . * scaling_factor, name = "Pastureland (all), acres (mln)")  # Multiply back the scaled beef_head for the secondary y-axis
+  ) +
+  scale_color_manual(values = c("Beef cow inventory, head" = "black", "Pastureland (all), acres" = "red"),  # Manually assign colors
+                     name = "") +  # Legend title
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 10),
+        axis.title.y = element_text(size = 10),
+        axis.title.y.right = element_text(size = 10),  
+        axis.text.y = element_text(size = 10),
+        legend.position = c(0.8, 0.8),  # Position the legend inside the plot at coordinates (0.2, 0.8)
+        legend.background = element_rect(fill = alpha('white', 0.5)),
+        legend.text = element_text(size = 12),  # Set legend text size
+        legend.title = element_text(size = 14))   # Make legend background semi-transparent
+
+```
+
+# FIGURE 2. Projected cattle stocking rates (2020-2099).
+
+```{r}
+
+# FIGURE 2
+ggplot(data = combined_data, aes(x = year)) +
+  geom_line(aes(y = smoothed_SR, color = scenario), linewidth = 1.5) +  # Smoothed line
+  geom_point(aes(y = smoothed_SR, color = scenario), size = 2) +  # Smoothed points
+  labs(
+    x = "Year",
+    y = "Projected Stock Rate",
+    color = "Scenario"
+  ) +
+  scale_color_manual(values = c("RCP 4.5" = "blue", "RCP 8.5" = "red")) +  # Set colors
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+```
+
+## Table 1. Stocking rate by US geographical region, 1990-2020.
+
+```{r}
+
+merged_ALL <- left_join(pasture_data_ALL, beef_inv, by = c("year", "state", "county")) 
+
+## US regional data
+state_to_region <- function(state_name) {
+  state_name <- tolower(state_name)  # Convert state name to lowercase for case-insensitive matching
+  ifelse(state_name %in% c("michigan", "wisconsin", "minnesota"), "Lake States",
+         ifelse(state_name %in% c("iowa", "illinois", "indiana", "ohio", "missouri"), "Corn Belt",
+                ifelse(state_name %in% c("north dakota", "south dakota", "nebraska", "kansas"), "Northern Plains",
+                       ifelse(state_name %in% c("oklahoma", "texas"), "Southern Plains",
+                              ifelse(state_name %in% c("arkansas", "louisiana", "mississippi"), "Delta States",
+                                     ifelse(state_name %in% c("alabama", "south carolina", "georgia", "florida"), "Southeast",
+                                            ifelse(state_name %in% c("west virginia", "kentucky", "virginia", "tennessee", "north carolina"), "Appalachia",
+                                                   ifelse(state_name %in% c("maine", "new hampshire", "vermont", "massachusetts", "rhode island", "connecticut", 
+                                                                            "new york", "new jersey", "pennsylvania", "delaware", "maryland"), "Northeast",
+                                                          ifelse(state_name %in% c("montana", "idaho", "wyoming", "colorado", "utah", "nevada", "arizona", "new mexico"), "Mountain",
+                                                                 ifelse(state_name %in% c("washington", "oregon", "california"), "Pacific", NA))))))))))
+  
+}
+
+# Create ANNUAL pastureland data - REGIONAL
+pasture_data_ALL_region <- pasture_data_ALL %>% 
+  mutate(region = state_to_region(state)) %>% 
+  group_by(year, region) %>%
+  summarise(
+    total_pastureland_all_types = sum(pastureland_all_types, na.rm = TRUE)
+  )
+
+# Create ANNUAL cattle inventory data - REGIONAL
+beef_inv_total_region <- beef_inv %>% 
+  mutate(region = state_to_region(state)) %>% 
+  group_by(year, region) %>%
+  summarise(
+    beef_inv = sum(beef_inv, na.rm = TRUE)
+  )
+
+# JOIN
+merged_ALL_regional <- left_join(pasture_data_ALL_region, beef_inv_total_region, by = c("year", "region")) 
+
+merged_ALL_regional_SR <- left_join(merged_ALL_regional, cattle_weight, by = c("year")) %>% 
+  mutate(stock_rate = (beef_inv * mean_live_wt/AU * grazing_months)/total_pastureland_all_types) %>% 
+  dplyr::select(year, region, stock_rate) %>% 
+  dplyr::filter(year != 1978) %>% 
+  na.omit()
+
+
+# TABLE 1
+merged_ALL_regional_SR <- merged_ALL_regional_SR %>%
+  mutate(decade = floor(year / 10) * 10)  # Group years into decades (e.g., 1980s, 1990s)
+
+# Summarize by region and decade
+summary_table <- merged_ALL_regional_SR %>%
+  group_by(region, decade) %>%
+  summarize(
+    avg_stock_rate = mean(stock_rate, na.rm = TRUE),  # Calculate average stocking rate
+    .groups = "drop"
+  )
+
+summary_table_wide <- summary_table %>%
+  pivot_wider(
+    names_from = decade,
+    values_from = avg_stock_rate,
+    names_prefix = "Decade_"
+  )
+
+summary_table_wide <- summary_table_wide %>%
+  mutate(
+    change_1990_1980 = ((Decade_1990 - Decade_1980) / Decade_1980) * 100,
+    change_2000_1990 = ((Decade_2000 - Decade_1980) / Decade_1980) * 100,
+    change_2010_2000 = ((Decade_2010 - Decade_1980) / Decade_1980) * 100
+  )
+
+# Calculate national average
+national_avg <- merged_ALL_regional_SR %>%
+  group_by(decade = floor(year / 10) * 10) %>%
+  summarize(
+    avg_stock_rate = mean(stock_rate, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = decade,
+    values_from = avg_stock_rate,
+    names_prefix = "Decade_"
+  ) %>%
+  mutate(
+    change_1990_1980 = ((Decade_1990 - Decade_1980) / Decade_1980) * 100,
+    change_2000_1990 = ((Decade_2000 - Decade_1980) / Decade_1980) * 100,
+    change_2010_2000 = ((Decade_2010 - Decade_1980) / Decade_1980) * 100
+  )
+
+# Add a "region" label for national average
+national_avg <- national_avg %>%
+  mutate(region = "National Avg")
+
+# Append national average to the summary table
+final_table <- bind_rows(summary_table_wide, national_avg) %>% 
+  mutate(across(where(is.numeric), ~ round(., 2))) 
+ft <- flextable(data = final_table)
+ft
+
+```
+
+## Table 2. Regression analysis results for delayed drought effects.
+
+```{r}
+
+# TABLE 2
+#### 5 LAGS #####
+pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3", "drought_lag4", "drought_lag5")], scale. = TRUE)
+regression_data_lagged$pca1 <- pca$x[, 1]
+
+
+# Model 1
+reg_51 <- feols(log(stock_rate) ~ pca1 | county, data = regression_data_lagged)
+reg_51
+
+# Model 2
+reg_52 <- feols(log(stock_rate) ~ pca1 + total_GDD| county, data = regression_data_lagged)
+reg_52
+
+# Model 3
+reg_53 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD| county, data = regression_data_lagged)
+reg_53
+
+# Model 4
+reg_54 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t| county, data = regression_data_lagged)
+reg_54
+
+# Model 5
+reg_5 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county, data = regression_data_lagged)
+reg_5
+
+
+```
+
+## Table 3. Regression results for delayed drought effects.
+
+```{r}
+
+## TABLE 3
+
+#### 1 LAG #####
+pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1")], scale. = TRUE)
+regression_data_lagged$pca1 <- pca$x[, 1]
+
+reg_1 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county, data = regression_data_lagged)
+reg_1
+#### 2 LAGS #####
+pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2")], scale. = TRUE)
+regression_data_lagged$pca1 <- pca$x[, 1]
+
+reg_2 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county , data = regression_data_lagged)
+reg_2
+
+#### 3 LAGS #####
+pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3")], scale. = TRUE)
+regression_data_lagged$pca1 <- pca$x[, 1]
+
+reg_3 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county , data = regression_data_lagged)
+reg_3
+
+#### 4 LAGS #####
+pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3", "drought_lag4")], scale. = TRUE)
+regression_data_lagged$pca1 <- pca$x[, 1]
+
+reg_4 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county , data = regression_data_lagged)
+reg_4
+
+#### 5 LAGS #####
+pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3", "drought_lag4", "drought_lag5")], scale. = TRUE)
+regression_data_lagged$pca1 <- pca$x[, 1]
+
+
+
+```
