@@ -4,7 +4,7 @@ format: html
 editor: visual
 ---
 
-### ============================================================
+### ==============================================
 
 ### Visualization and Results
 
@@ -20,36 +20,41 @@ editor: visual
 
 ### - Table 3. Regression analysis results for all lagged (1-5) effects.
 
-### ============================================================
+### ===============================================
 
 # Figure 1. Annual US national beef cow inventory and pastureland data.
 
 ```{r}
 
 # Create ANNUAL pastureland and cattle inventory data - ALL US
-pasture_data_ALL_US <- pasture_data_ALL %>% 
+pasture_data_before1997_National <- pasture_land_before1997 %>% 
   group_by(year) %>%
   summarise(
-    total_pastureland_all_types = sum(pastureland_all_types, na.rm = TRUE)
+    pastureland_all_types = sum(pastureland_all_types, na.rm = TRUE)
   )
+pasture_data_ALL_US <- rbind(pasture_data_before1997_National, pasture_land_after1997_National)
 
-beef_inv_total_US <- beef_inv %>% 
+
+beef_inv_before1997_National <- beef_inv_before1997 %>% 
   group_by(year) %>%
   summarise(
     beef_inv = sum(beef_inv, na.rm = TRUE)
   )
+beef_inv_total_US <- rbind(beef_inv_before1997_National, beef_inv_after1997_National)
+
+
 
 merged_ALL_national <- left_join(pasture_data_ALL_US, beef_inv_total_US, by = c("year"))
 
 merged_ALL_national$beef_inv <- merged_ALL_national$beef_inv/1000000
-merged_ALL_national$total_pastureland_all_types <- merged_ALL_national$total_pastureland_all_types/1000000
-scaling_factor <- max(merged_ALL_national$total_pastureland_all_types) / max(merged_ALL_national$beef_inv)
+merged_ALL_national$pastureland_all_types <- merged_ALL_national$pastureland_all_types/1000000
+scaling_factor <- max(merged_ALL_national$pastureland_all_types) / max(merged_ALL_national$beef_inv)
 
 
 # FIGURE 1
 ggplot() +
   geom_line(data = merged_ALL_national, aes(x = year, y = beef_inv, color = "Beef cow inventory, head")) +  # Assign legend label
-  geom_line(data = merged_ALL_national, aes(x = year, y = total_pastureland_all_types / scaling_factor, color = "Pastureland (all), acres")) +  # Assign legend label and scaling factor
+  geom_line(data = merged_ALL_national, aes(x = year, y = pastureland_all_types / scaling_factor, color = "Pastureland (all), acres")) +  # Assign legend label and scaling factor
   xlab("Year") + 
   theme_bw() + 
   labs(title = "") + 
@@ -78,9 +83,9 @@ ggplot() +
 ```{r}
 
 # FIGURE 2
-ggplot(data = combined_data, aes(x = year)) +
-  geom_line(aes(y = smoothed_SR, color = scenario), linewidth = 1.5) +  # Smoothed line
-  geom_point(aes(y = smoothed_SR, color = scenario), size = 2) +  # Smoothed points
+ggplot(data = average_stock_rate, aes(x = year)) +
+  geom_line(aes(y = smoothed_stock_rate, color = scenario), linewidth = 1.5) +  # Smoothed line
+  # geom_line(aes(y = mean_projected_stock_rate, color = scenario), linewidth = 1.5) +  # Not Smoothed line
   labs(
     x = "Year",
     y = "Projected Stock Rate",
@@ -93,7 +98,8 @@ ggplot(data = combined_data, aes(x = year)) +
     axis.title.x = element_text(size = 12),
     axis.title.y = element_text(size = 12),
     legend.title = element_text(size = 12),
-    legend.text = element_text(size = 10)
+    legend.text = element_text(size = 10)) 
+    
 ```
 
 ## Table 1. Stocking rate by US geographical region, 1990-2020.
@@ -138,10 +144,12 @@ beef_inv_total_region <- beef_inv %>%
 # JOIN
 merged_ALL_regional <- left_join(pasture_data_ALL_region, beef_inv_total_region, by = c("year", "region")) 
 
-merged_ALL_regional_SR <- left_join(merged_ALL_regional, cattle_weight, by = c("year")) %>% 
-  mutate(stock_rate = (beef_inv * mean_live_wt/AU * grazing_months)/total_pastureland_all_types) %>% 
-  dplyr::select(year, region, stock_rate) %>% 
-  dplyr::filter(year != 1978) %>% 
+AU = 1000
+grazing_months = 5
+merged_ALL_regional_SR <- left_join(merged_ALL_regional, cattle_weight, by = c("year")) %>%
+  mutate(stock_rate = (beef_inv * mean_live_wt/AU * grazing_months)/total_pastureland_all_types) %>%
+  dplyr::select(year, region, stock_rate) %>%
+  dplyr::filter(year != 1978) %>%
   na.omit()
 
 
@@ -167,8 +175,8 @@ summary_table_wide <- summary_table %>%
 summary_table_wide <- summary_table_wide %>%
   mutate(
     change_1990_1980 = ((Decade_1990 - Decade_1980) / Decade_1980) * 100,
-    change_2000_1990 = ((Decade_2000 - Decade_1980) / Decade_1980) * 100,
-    change_2010_2000 = ((Decade_2010 - Decade_1980) / Decade_1980) * 100
+    change_2000_1990 = ((Decade_2000 - Decade_1990) / Decade_1980) * 100,
+    change_2010_2000 = ((Decade_2010 - Decade_2000) / Decade_1980) * 100
   )
 
 # Calculate national average
@@ -185,8 +193,8 @@ national_avg <- merged_ALL_regional_SR %>%
   ) %>%
   mutate(
     change_1990_1980 = ((Decade_1990 - Decade_1980) / Decade_1980) * 100,
-    change_2000_1990 = ((Decade_2000 - Decade_1980) / Decade_1980) * 100,
-    change_2010_2000 = ((Decade_2010 - Decade_1980) / Decade_1980) * 100
+    change_2000_1990 = ((Decade_2000 - Decade_1990) / Decade_1980) * 100,
+    change_2010_2000 = ((Decade_2010 - Decade_2000) / Decade_1980) * 100
   )
 
 # Add a "region" label for national average
@@ -246,6 +254,7 @@ regression_data_lagged$pca1 <- pca$x[, 1]
 
 reg_1 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county, data = regression_data_lagged)
 reg_1
+
 #### 2 LAGS #####
 pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2")], scale. = TRUE)
 regression_data_lagged$pca1 <- pca$x[, 1]

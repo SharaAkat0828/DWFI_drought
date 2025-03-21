@@ -6,7 +6,7 @@ execute:
   echo: true
 ---
 
-### ============================================================
+### ============================================
 
 ### Data Collection Script
 
@@ -24,9 +24,10 @@ execute:
 
 ### - MACA dataset: Climate Projections
 
-### ============================================================
+### =============================================
 
 ```{r}
+# load necessary packages/libraries
 pacman::p_load(
   pacman,
   stars, # spatiotemporal data handling
@@ -36,10 +37,9 @@ pacman::p_load(
   dplyr, # data wrangling
   tidyverse, 
   fixest,
-  parallel,
-  foreach,
-  doParallel,
+  usdarnass,
   cubelyr,
+  flextable,
   tigris,
   zoo,
   SCI,
@@ -73,23 +73,37 @@ usdarnass::nass_set_key(key = "79F68508-887F-3423-A3EE-F60AB7DFB3AE")
 ```{r}
 #| echo: false
 
-## PASTURE LAND - from USDA NASS quickStats
-pasture_land_total <- usdarnass::nass_data(source_desc = "CENSUS", sector_desc = "ECONOMICS", group_desc = "FARMS & LAND & ASSETS",
-                                      commodity_desc = "AG LAND", statisticcat_desc = "AREA", short_desc = "AG LAND, PASTURELAND - ACRES",
-                                      domain_desc = "TOTAL", agg_level_desc = "NATIONAL", year = "1990<=") %>% 
-  dplyr::select(., state_name, county_name, year, Value) 
-
-pasture_land_total <- rename(pasture_land_total, state = state_name)
-pasture_land_total <- rename(pasture_land_total, county = county_name)
-pasture_land_total <- rename(pasture_land_total, pastureland_all_types = Value)
-
-
 # PASTURE LAND - from PDFs (before 1997)
-pasture_data_PDF <- readxl::read_xlsx('/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/pasture_data_FINAL.xlsx')
+### NATIONAL
+pasture_land_after1997_National <- readxl::read_xlsx('/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/pasture_data_after1997_National.xlsx') %>% 
+    dplyr::select(., Year, Value) 
+
+pasture_land_after1997_National <- rename(pasture_land_after1997_National, year = Year)
+pasture_land_after1997_National <- rename(pasture_land_after1997_National, pastureland_all_types = Value)
+pasture_land_after1997_National$year <- as.numeric(as.character(pasture_land_after1997_National$year))
+pasture_land_after1997_National$pastureland_all_types <- gsub(",", "", pasture_land_after1997_National$pastureland_all_types)
+pasture_land_after1997_National$pastureland_all_types <- as.numeric(as.character(pasture_land_after1997_National$pastureland_all_types))
+
+
+
+### COUNTY
+pasture_land_after1997 <- readxl::read_xlsx('/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/pasture_data_after1997.xlsx') %>% 
+  dplyr::select(., State, County, Year, Value) 
+
+pasture_land_after1997 <- rename(pasture_land_after1997, state = State)
+pasture_land_after1997 <- rename(pasture_land_after1997, county = County)
+pasture_land_after1997 <- rename(pasture_land_after1997, year = Year)
+pasture_land_after1997 <- rename(pasture_land_after1997, pastureland_all_types = Value)
+
+
+pasture_land_before1997 <- readxl::read_xlsx('/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/pasture_data_before1997.xlsx')
+pasture_land_before1997$year <- as.numeric(as.character(pasture_land_before1997$year))
+pasture_land_before1997$pastureland_all_types <- gsub(",", "", pasture_land_before1997$pastureland_all_types)
+pasture_land_before1997$pastureland_all_types <- as.numeric(as.character(pasture_land_before1997$pastureland_all_types))
 
 
 # Join all PASTURELAND data
-pasture_data_ALL <- rbind(pasture_data_PDF, pasture_land_total)
+pasture_data_ALL <- rbind(pasture_land_before1997, pasture_land_after1997)
 pasture_data_ALL$year <- as.numeric(as.character(pasture_data_ALL$year))
 pasture_data_ALL$pastureland_all_types <- gsub(",", "", pasture_data_ALL$pastureland_all_types)
 pasture_data_ALL$pastureland_all_types <- as.numeric(as.character(pasture_data_ALL$pastureland_all_types))
@@ -104,30 +118,46 @@ pasture_data_ALL$county <- tolower(pasture_data_ALL$county)
 ```{r}
 
 ## CATTLE INV - from USDA NASS quickStats
-beef_inv_total <- usdarnass::nass_data(source_desc = "CENSUS", sector_desc = "ANIMALS & PRODUCTS", group_desc = "LIVESTOCK",
-                                      commodity_desc = "CATTLE", statisticcat_desc = "INVENTORY", short_desc = "CATTLE, COWS, BEEF - INVENTORY",
-                                      domain_desc = "TOTAL",  agg_level_desc = "NATIONAL", year = "1990<=") %>% 
-  dplyr::select(., state_name, county_name, year, Value) %>% 
-  rename(beef_inv = Value,
-         state = state_name,
-         county = county_name)
+### NATIONAL
+beef_inv_after1997_National <- readxl::read_xlsx('/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/county_beef_after1997_National.xlsx') %>% 
+    dplyr::select(., Year, Value) 
+
+beef_inv_after1997_National <- rename(beef_inv_after1997_National, year = Year)
+beef_inv_after1997_National <- rename(beef_inv_after1997_National, beef_inv = Value)
+beef_inv_after1997_National$year <- as.numeric(as.character(beef_inv_after1997_National$year))
+beef_inv_after1997_National$beef_inv <- gsub(",", "", beef_inv_after1997_National$beef_inv)
+beef_inv_after1997_National$beef_inv <- as.numeric(as.character(beef_inv_after1997_National$beef_inv))
 
 
-# CATTLE INV - from PDFs (before 1997)
-beef_inv_PDF <- readxl::read_xlsx('/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/county_beefinv.xlsx')
 
 
-# Join all CATTLE INV. data
-beef_inv <- rbind(beef_inv_PDF, beef_inv_total)
+### COUNTY
+beef_inv_after1997 <- readxl::read_xlsx('/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/county_beefinv_after1997.xlsx') %>% 
+    dplyr::select(., State, County, Year, Value) 
+
+beef_inv_after1997 <- rename(beef_inv_after1997, state = State)
+beef_inv_after1997 <- rename(beef_inv_after1997, county = County)
+beef_inv_after1997 <- rename(beef_inv_after1997, year = Year)
+beef_inv_after1997 <- rename(beef_inv_after1997, beef_inv = Value)
+
+
+beef_inv_before1997 <- readxl::read_xlsx('/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/county_beefinv_before1997.xlsx')
+beef_inv_before1997$year <- as.numeric(as.character(beef_inv_before1997$year))
+beef_inv_before1997$beef_inv <- gsub(",", "", beef_inv_before1997$beef_inv)
+beef_inv_before1997$beef_inv <- as.numeric(as.character(beef_inv_before1997$beef_inv))
+
+
+beef_inv <- rbind(beef_inv_before1997, beef_inv_after1997)
 beef_inv$year <- as.numeric(as.character(beef_inv$year))
 beef_inv$beef_inv <- gsub(",", "", beef_inv$beef_inv)
 beef_inv$beef_inv <- as.numeric(as.character(beef_inv$beef_inv))
 beef_inv$state <- tolower(beef_inv$state)
 beef_inv$county <- tolower(beef_inv$county)
 
+
 ```
 
-### 3. Retrieve USDA NASS hay production data
+### 3. Retrieve hay production data from USDA NASS 
 
 ```{r}
 ## HAY PRODUCTION (lbs) DATA
@@ -166,7 +196,8 @@ hay_all_stocks_1000t_national <- hay_all_stocks_1000t_3 %>%
 ### 4. Retrieve cattle dressing weights data from USDA NASS
 
 ```{r}
-cattle_weight <- readxl::read_xlsx("Data/Data/catsltr.xlsx", sheet = 2, skip = 3) %>% 
+dressing_pct <- 0.55
+cattle_weight <- readxl::read_xlsx("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/catsltr.xlsx", sheet = 2, skip = 3) %>% 
   dplyr::select(1, 18) %>% 
   `colnames<-`(c("date", "dressed_wt")) %>% 
   dplyr::mutate(live_wt = dressed_wt/dressing_pct,
@@ -319,326 +350,31 @@ yearly_drought_data$county <- tolower(yearly_drought_data$county)
 ### 6. Retrieve Climate projections data from MACA
 
 ```{r}
-# 1. First we need to download the MACA projected climate data for several different Global Climate Models (GCMs)
 
-# ## 1. bcc-csm1-1 (China)
-# ## 1.1. pr DATA
-# # 4.5, pr: 2006-2099, monthly
-# urls_pr_45_1 <- c(
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_pr_bcc-csm1-1_r1i1p1_rcp45_2006_2025_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_pr_bcc-csm1-1_r1i1p1_rcp45_2026_2045_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_pr_bcc-csm1-1_r1i1p1_rcp45_2046_2065_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_pr_bcc-csm1-1_r1i1p1_rcp45_2066_2085_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_pr_bcc-csm1-1_r1i1p1_rcp45_2086_2099_CONUS_monthly.nc"
-# )
-# 
-# # 8.5, pr: 2006-2099, monthly
-# urls_pr_85_1 <- c(
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_pr_bcc-csm1-1_r1i1p1_rcp85_2006_2025_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_pr_bcc-csm1-1_r1i1p1_rcp85_2026_2045_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_pr_bcc-csm1-1_r1i1p1_rcp85_2046_2065_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_pr_bcc-csm1-1_r1i1p1_rcp85_2066_2085_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_pr_bcc-csm1-1_r1i1p1_rcp85_2086_2099_CONUS_monthly.nc"
-# )
+# 1. Functino to estimate weather variables:
 
+process_cmip6_data <- function(tmax_file, tmin_file, pr_file, scenario, temp_base = 12, temp_up = 31) {
 
-## 2. bcc-csm1-1-m (China)
-## 1.1. pr DATA
-# 4.5, pr: 2006-2099, monthly
-urls_pr_45_1 <- c(
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp45_2006_2025_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp45_2026_2045_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp45_2046_2065_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp45_2066_2085_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp45_2086_2099_CONUS_monthly.nc"
-)
-
-# 8.5, pr: 2006-2099, monthly
-urls_pr_85_1 <- c(
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp85_2006_2025_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp85_2026_2045_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp85_2046_2065_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp85_2066_2085_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp85_2086_2099_CONUS_monthly.nc"
-)
-
-
-
-urls_pr_45_1 <- c(
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp45_2006_2025_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp45_2026_2045_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp45_2046_2065_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp45_2066_2085_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp45_2086_2099_CONUS_monthly.nc"
-)
-
-# 8.5, pr: 2006-2099, monthly
-urls_pr_85_1 <- c(
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp85_2006_2025_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp85_2026_2045_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp85_2046_2065_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp85_2066_2085_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_pr_bcc-csm1-1-m_r1i1p1_rcp85_2086_2099_CONUS_monthly.nc"
-)
-
-# Loop to download and extract each file
-for (url in urls_pr_45_1) {
-  # Extract year range from the URL for naming the file
-  year_range <- gsub(".*_([0-9]{4}_[0-9]{4})_.*", "\\1", url)
+  # Rotate to ensure correct alignment
+  pr_raster <- terra::rotate(pr_file)
+  tmin_raster <- terra::rotate(tmin_file)
+  tmax_raster <- terra::rotate(tmax_file)
   
-  # Set destination file name
-  destfile <- paste0("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/pr4.5_", year_range, ".nc")
+  # Set CRS to WGS84 explicitly
+  crs(pr_raster) <- "EPSG:4326"
+  crs(tmin_raster) <- "EPSG:4326"
+  crs(tmax_raster) <- "EPSG:4326"
   
-  # Increase timeout in case of large files
-  options(timeout = max(600, getOption("timeout")))
-  
-  # Download the file
-  download.file(url, destfile = destfile, method = "auto", mode = "wb")
-  
-  # Load the .nc file into a raster object
-  assign(paste0("pr4.5", year_range), terra::rast(destfile))
-  
-  # Print confirmation of download and extraction
-  print(paste("Downloaded and loaded:", destfile))
-}
-
-# Loop to download and extract each file
-for (url in urls_pr_85_1) {
-  # Extract year range from the URL for naming the file
-  year_range <- gsub(".*_([0-9]{4}_[0-9]{4})_.*", "\\1", url)
-  
-  # Set destination file name
-  destfile <- paste0("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/pr8.5_", year_range, ".nc")
-  
-  # Increase timeout in case of large files
-  options(timeout = max(600, getOption("timeout")))
-  
-  # Download the file
-  download.file(url, destfile = destfile, method = "auto", mode = "wb")
-  
-  # Load the .nc file into a raster object
-  assign(paste0("pr8.5_", year_range), terra::rast(destfile))
-  
-  # Print confirmation of download and extraction
-  print(paste("Downloaded and loaded:", destfile))
-}
-
-
-
-## 1.2. tmin DATA
-# 4.5, tmin: 2006-2099, monthly
-# urls_tmin_45_1 <- c(
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmin_bcc-csm1-1_r1i1p1_rcp45_2006_2025_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmin_bcc-csm1-1_r1i1p1_rcp45_2026_2045_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmin_bcc-csm1-1_r1i1p1_rcp45_2046_2065_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmin_bcc-csm1-1_r1i1p1_rcp45_2066_2085_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmin_bcc-csm1-1_r1i1p1_rcp45_2086_2099_CONUS_monthly.nc"
-# )
-# 
-# 
-# # 8.5, tmin: 2006-2099, monthly
-# urls_tmin_85_1 <- c(
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmin_bcc-csm1-1_r1i1p1_rcp85_2006_2025_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmin_bcc-csm1-1_r1i1p1_rcp85_2026_2045_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmin_bcc-csm1-1_r1i1p1_rcp85_2046_2065_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmin_bcc-csm1-1_r1i1p1_rcp85_2066_2085_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmin_bcc-csm1-1_r1i1p1_rcp85_2086_2099_CONUS_monthly.nc"
-# )
-
-urls_tmin_45_1 <- c(
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmin_bcc-csm1-1-m_r1i1p1_rcp45_2006_2025_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmin_bcc-csm1-1-m_r1i1p1_rcp45_2026_2045_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmin_bcc-csm1-1-m_r1i1p1_rcp45_2046_2065_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmin_bcc-csm1-1-m_r1i1p1_rcp45_2066_2085_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmin_bcc-csm1-1-m_r1i1p1_rcp45_2086_2099_CONUS_monthly.nc"
-)
-
-
-# 8.5, tmin: 2006-2099, monthly
-urls_tmin_85_1 <- c(
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmin_bcc-csm1-1-m_r1i1p1_rcp85_2006_2025_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmin_bcc-csm1-1-m_r1i1p1_rcp85_2026_2045_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmin_bcc-csm1-1-m_r1i1p1_rcp85_2046_2065_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmin_bcc-csm1-1-m_r1i1p1_rcp85_2066_2085_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmin_bcc-csm1-1-m_r1i1p1_rcp85_2086_2099_CONUS_monthly.nc"
-)
-
-# Loop to download and extract each file
-for (url in urls_tmin_45_1) {
-  # Extract year range from the URL for naming the file
-  year_range <- gsub(".*_([0-9]{4}_[0-9]{4})_.*", "\\1", url)
-  
-  # Set destination file name
-  destfile <- paste0("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/tmin4.5_", year_range, ".nc")
-  
-  # Increase timeout in case of large files
-  options(timeout = max(600, getOption("timeout")))
-  
-  # Download the file
-  download.file(url, destfile = destfile, method = "auto", mode = "wb")
-  
-  # Load the .nc file into a raster object
-  assign(paste0("tmin4.5_", year_range), terra::rast(destfile))
-  
-  # Print confirmation of download and extraction
-  print(paste("Downloaded and loaded:", destfile))
-}
-
-
-# Loop to download and extract each file
-for (url in urls_tmin_85_1) {
-  # Extract year range from the URL for naming the file
-  year_range <- gsub(".*_([0-9]{4}_[0-9]{4})_.*", "\\1", url)
-  
-  # Set destination file name
-  destfile <- paste0("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/tmin8.5_", year_range, ".nc")
-  
-  # Increase timeout in case of large files
-  options(timeout = max(600, getOption("timeout")))
-  
-  # Download the file
-  download.file(url, destfile = destfile, method = "auto", mode = "wb")
-  
-  # Load the .nc file into a raster object
-  assign(paste0("tmin8.5_", year_range), terra::rast(destfile))
-  
-  # Print confirmation of download and extraction
-  print(paste("Downloaded and loaded:", destfile))
-}
-
-
-
-## 1.3. tmax DATA
-# 4.5, tmax: 2006-2099, monthly
-# urls_tmax_45_1 <- c(
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmax_bcc-csm1-1_r1i1p1_rcp45_2006_2025_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmax_bcc-csm1-1_r1i1p1_rcp45_2026_2045_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmax_bcc-csm1-1_r1i1p1_rcp45_2046_2065_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmax_bcc-csm1-1_r1i1p1_rcp45_2066_2085_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmax_bcc-csm1-1_r1i1p1_rcp45_2086_2099_CONUS_monthly.nc"
-# )
-# 
-# 
-# # 8.5, tmax: 2006-2099, monthly
-# urls_tmax_85_1 <- c(
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmax_bcc-csm1-1_r1i1p1_rcp85_2006_2025_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmax_bcc-csm1-1_r1i1p1_rcp85_2026_2045_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmax_bcc-csm1-1_r1i1p1_rcp85_2046_2065_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmax_bcc-csm1-1_r1i1p1_rcp85_2066_2085_CONUS_monthly.nc",
-#   "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1/macav2livneh_tasmax_bcc-csm1-1_r1i1p1_rcp85_2086_2099_CONUS_monthly.nc"
-# )
-
-urls_tmax_45_1 <- c(
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmax_bcc-csm1-1-m_r1i1p1_rcp45_2006_2025_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmax_bcc-csm1-1-m_r1i1p1_rcp45_2026_2045_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmax_bcc-csm1-1-m_r1i1p1_rcp45_2046_2065_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmax_bcc-csm1-1-m_r1i1p1_rcp45_2066_2085_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmax_bcc-csm1-1-m_r1i1p1_rcp45_2086_2099_CONUS_monthly.nc"
-)
-
-
-# 8.5, tmax: 2006-2099, monthly
-urls_tmax_85_1 <- c(
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmax_bcc-csm1-1-m_r1i1p1_rcp85_2006_2025_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmax_bcc-csm1-1-m_r1i1p1_rcp85_2026_2045_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmax_bcc-csm1-1-m_r1i1p1_rcp85_2046_2065_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmax_bcc-csm1-1-m_r1i1p1_rcp85_2066_2085_CONUS_monthly.nc",
-  "http://thredds.northwestknowledge.net:8080/thredds/fileServer/NWCSC_INTEGRATED_SCENARIOS_ALL_CLIMATE/macav2livneh/bcc-csm1-1-m/macav2livneh_tasmax_bcc-csm1-1-m_r1i1p1_rcp85_2086_2099_CONUS_monthly.nc"
-)
-
-# Loop to download and extract each file
-for (url in urls_tmax_45_1) {
-  # Extract year range from the URL for naming the file
-  year_range <- gsub(".*_([0-9]{4}_[0-9]{4})_.*", "\\1", url)
-  
-  # Set destination file name
-  destfile <- paste0("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/tmax4.5_", year_range, ".nc")
-  
-  # Increase timeout in case of large files
-  options(timeout = max(600, getOption("timeout")))
-  
-  # Download the file
-  download.file(url, destfile = destfile, method = "auto", mode = "wb")
-  
-  # Load the .nc file into a raster object
-  assign(paste0("tmax4.5_", year_range), terra::rast(destfile))
-  
-  # Print confirmation of download and extraction
-  print(paste("Downloaded and loaded:", destfile))
-}
-
-
-# Loop to download and extract each file
-for (url in urls_tmax_85_1) {
-  # Extract year range from the URL for naming the file
-  year_range <- gsub(".*_([0-9]{4}_[0-9]{4})_.*", "\\1", url)
-  
-  # Set destination file name
-  destfile <- paste0("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/tmax8.5_", year_range, ".nc")
-  
-  # Increase timeout in case of large files
-  options(timeout = max(600, getOption("timeout")))
-  
-  # Download the file
-  download.file(url, destfile = destfile, method = "auto", mode = "wb")
-  
-  # Load the .nc file into a raster object
-  assign(paste0("tmax8.5_", year_range), terra::rast(destfile))
-  
-  # Print confirmation of download and extraction
-  print(paste("Downloaded and loaded:", destfile))
-}
-
-## 2. Estimating Variables
-temp_base <- 12  # base temperature for GDD calculation
-temp_up <- 31  # threshold temperature for EDD calculation
-
-# Load US counties
-US_counties <- tigris::counties(state = "US", cb = TRUE) %>%
-  st_as_sf()
-
-data_dir <- "/Volumes/Extreme SSD/UNL/DWFI/projection/data/2"
-
-# Define file paths for 4.5 and 8.5 scenarios
-file_paths <- list(
-  `4.5` = list(
-    pr = list.files(path = data_dir, pattern = "pr4.5.*\\.nc$", full.names = TRUE),
-    tmin = list.files(path = data_dir, pattern = "tmin4.5.*\\.nc$", full.names = TRUE),
-    tmax = list.files(path = data_dir, pattern = "tmax4.5.*\\.nc$", full.names = TRUE)
-  ),
-  `8.5` = list(
-    pr = list.files(path = data_dir, pattern = "pr8.5.*\\.nc$", full.names = TRUE),
-    tmin = list.files(path = data_dir, pattern = "tmin8.5.*\\.nc$", full.names = TRUE),
-    tmax = list.files(path = data_dir, pattern = "tmax8.5.*\\.nc$", full.names = TRUE)
-  )
-)
-
-# Function to process one month of data
-process_monthly_data <- function(year, scenario, file_paths, US_counties) {
-  # Load corresponding files for the scenario and year range
-  pr_file <- file_paths[[scenario]]$pr[grepl(sprintf("%d", year), file_paths[[scenario]]$pr)]
-  tmin_file <- file_paths[[scenario]]$tmin[grepl(sprintf("%d", year), file_paths[[scenario]]$tmin)]
-  tmax_file <- file_paths[[scenario]]$tmax[grepl(sprintf("%d", year), file_paths[[scenario]]$tmax)]
-  
-  # Check if all files exist
-  if (length(pr_file) == 0 || length(tmin_file) == 0 || length(tmax_file) == 0) {
-    message(sprintf("Skipping %d-%02d for %s scenario due to missing files.", year, month, scenario))
-    return(NULL)
-  }
-  
-  # Load raster data
-  pr_raster <- rast(pr_file)
-  tmin_raster <- rast(tmin_file)
-  tmax_raster <- rast(tmax_file)
-  
+  # Assign time-based names to layers
   names(pr_raster) <- time(pr_raster)
   names(tmin_raster) <- time(tmin_raster)
   names(tmax_raster) <- time(tmax_raster)
   
-  # Assign CRS to raster and vector dataset
+  # Load US counties
+  US_counties <- tigris::counties(state = "US", cb = TRUE) %>% st_as_sf()
   US_counties_sf <- st_transform(US_counties, crs(pr_raster))
   
-  # Extract data for each variable
+  # Extract data
   pr_data <- as.data.table(terra::extract(pr_raster, vect(US_counties_sf)))
   tmin_data <- as.data.table(terra::extract(tmin_raster, vect(US_counties_sf)))
   tmax_data <- as.data.table(terra::extract(tmax_raster, vect(US_counties_sf)))
@@ -646,6 +382,7 @@ process_monthly_data <- function(year, scenario, file_paths, US_counties) {
   # Reshape and aggregate data
   pr_data_ID <- melt(pr_data, id.vars = "ID", variable.name = "Date", value.name = "ppt") %>%
     .[, .(ppt = mean(ppt, na.rm = TRUE)), by = .(ID, Date)]
+  pr_data_ID[, ppt := ppt * 86400]  # Convert to daily precipitation
   
   tmin_data_ID <- melt(tmin_data, id.vars = "ID", variable.name = "Date", value.name = "tmin") %>%
     .[, .(tmin = mean(tmin, na.rm = TRUE)), by = .(ID, Date)]
@@ -657,12 +394,11 @@ process_monthly_data <- function(year, scenario, file_paths, US_counties) {
   setkey(tmin_data_ID, ID, Date)
   setkey(tmax_data_ID, ID, Date)
   
-  
-  # Merge the data
+  # Merge datasets
   weather_data <- merge(pr_data_ID, tmin_data_ID, by = c("ID", "Date"), all = TRUE)
   weather_data <- merge(weather_data, tmax_data_ID, by = c("ID", "Date"), all = TRUE)
   
-  # Add year and month
+  # Add year and month columns
   weather_data[, year := year(Date)]
   weather_data[, month := month(Date)]
   
@@ -676,85 +412,81 @@ process_monthly_data <- function(year, scenario, file_paths, US_counties) {
   US_counties_v_1[, tmin := tmin - 273.15]
   
   US_counties_v_1[, Tavg := (tmax + tmin) / 2]
-  US_counties_v_1[, month_heat_index := (Tavg / 5) ^ 1.514]
+  US_counties_v_1[, daily_heat_index := (Tavg / 5) ^ 1.514]
   
   # US_counties_v_2 <- US_counties_v_1[, .(annual_heat_index = sum(month_heat_index, na.rm = TRUE)), by = .(year, NAME, STATE_NAME)]
+  US_counties_v2 <- US_counties_v_1[, .(
+    monthly_ppt = sum(ppt, na.rm = TRUE),  # Sum daily precipitation for monthly totals
+    monthly_tmin = mean(tmin, na.rm = TRUE),  # Sum daily precipitation for monthly totals
+    monthly_tmax = mean(tmax, na.rm = TRUE),  # Sum daily precipitation for monthly totals
+    monthly_heat_index = sum(daily_heat_index, na.rm = TRUE),
+    Tavg = mean(Tavg, na.rm = TRUE)
+  ), by = .(year, month, NAME, STATE_NAME)]
   
-  US_counties_annual <- US_counties_v_1[, .(
-    annual_heat_index = sum(month_heat_index, na.rm = TRUE)
+  US_counties_annual <- US_counties_v2[, .(
+    annual_heat_index = sum(monthly_heat_index, na.rm = TRUE)
   ), by = .(year, NAME, STATE_NAME)]
   
-  US_counties_v_2 <-  merge(US_counties_v_1, US_counties_annual, by = c("year", "NAME", "STATE_NAME"), all.x = TRUE)
+  US_counties_v_2 <-  merge(US_counties_v2, US_counties_annual, by = c("year", "NAME", "STATE_NAME"), all.x = TRUE)
   
   US_counties_v_2[, a := 675 * 10^(-9) * annual_heat_index^3 - 771 * 10^(-7) * annual_heat_index^2 + 1792 * 10^(-5) * annual_heat_index + 0.49239]
   
   # joined_weather_SPEI <- merge(US_counties_v_1, US_counties_v_2, by = c("year", "NAME", "STATE_NAME"), all.x = TRUE)
   US_counties_v_2[, PET := ifelse(Tavg <= 0, 0, 16 * ((10 * Tavg) / annual_heat_index) ^ a)]
-  US_counties_v_2[, D := ppt - PET]
+  US_counties_v_2[, D := monthly_ppt - PET]
   
   # joined_weather_SPEI[, Tavg := (tmax + tmin) / 2]
   US_counties_v_2[, GDD := fifelse(Tavg < temp_base, 0,
                                    fifelse(Tavg > temp_up, temp_up - temp_base,
                                            Tavg - temp_base))]
   
-  US_counties_v_2[, EDD := fifelse(tmax > temp_up, tmax - temp_up, 0)]
+  US_counties_v_2[, EDD := fifelse(monthly_tmax > temp_up, monthly_tmax - temp_up, 0)]
   
-  print(sprintf("Done with year: %d", year))
-  
+   if (scenario == "8.5") {
+        US_counties_v_2[, GDD := GDD - 0.5 * EDD]  } # Adjust GDD by subtracting EDD for RCP 8.5
+
   joined_weather <- US_counties_v_2[, .(
-    avg_tmin = tmin,
-    avg_tmax = tmax,
-    avg_tmean = Tavg,
-    sum_ppt = sum(ppt, na.rm = TRUE),
     monthly_D = sum(D, na.rm = TRUE),
     monthly_GDD = sum(GDD, na.rm = TRUE),
     monthly_EDD = sum(EDD, na.rm = TRUE)
   ), by = .(year, month, NAME, STATE_NAME)]
   
+  
   return(joined_weather)
 }
 
-# 2006, 2026, 2046, 2066, 2086
-month_year_data <- CJ(year = 2086)
 
-# Process all data
-results <- list()
-for (scenario in names(file_paths)) {
-  scenario_results <- lapply(1:nrow(month_year_data), function(i) {
-    year <- month_year_data[i, year]
-    process_monthly_data(year, scenario, file_paths, US_counties)
-  })
-  results[[scenario]] <- do.call(rbind, scenario_results)
+# 2. Function to run through all realizations
+process_cmip6_realization <- function(realization, base_dir, output_dir, temp_base = 12, temp_up = 31) {
+  
+  # Construct file paths dynamically based on realization number
+  tmax_4.5 <- rast(file.path(base_dir, sprintf("r%02d/tasmax_Amon_CanESM5_rcp45-cmip5_r%di1p1f1_gn_200601-210012.nc", realization, realization)))
+  tmin_4.5 <- rast(file.path(base_dir, sprintf("r%02d/tasmin_Amon_CanESM5_rcp45-cmip5_r%di1p1f1_gn_200601-210012.nc", realization, realization)))
+  pr_4.5   <- rast(file.path(base_dir, sprintf("r%02d/pr_Amon_CanESM5_rcp45-cmip5_r%di1p1f1_gn_200601-210012.nc", realization, realization)))
+
+  tmax_8.5 <- rast(file.path(base_dir, sprintf("r%02d/tasmax_Amon_CanESM5_rcp85-cmip5_r%di1p1f1_gn_200601-210012.nc", realization, realization)))
+  tmin_8.5 <- rast(file.path(base_dir, sprintf("r%02d/tasmin_Amon_CanESM5_rcp85-cmip5_r%di1p1f1_gn_200601-210012.nc", realization, realization)))
+  pr_8.5   <- rast(file.path(base_dir, sprintf("r%02d/pr_Amon_CanESM5_rcp85-cmip5_r%di1p1f1_gn_200601-210012.nc", realization, realization)))
+
+  # Process CMIP6 data for each scenario
+  file_45 <- process_cmip6_data(tmax_4.5, tmin_4.5, pr_4.5, "4.5", temp_base, temp_up)
+  file_85 <- process_cmip6_data(tmax_8.5, tmin_8.5, pr_8.5, "8.5", temp_base, temp_up)
+
+  # Save results with realization number
+  saveRDS(file_45, file.path(output_dir, sprintf("Weather_r%02d_4.5.rds", realization)))
+  saveRDS(file_85, file.path(output_dir, sprintf("Weather_r%02d_8.5.rds", realization)))
+
+  cat(sprintf("Processed and saved results for realization r%02d\n", realization))
 }
 
-# Save results
-saveRDS(results$`4.5`, file.path(data_dir, "2086_scenario_4.5_results.rds"))
-saveRDS(results$`8.5`, file.path(data_dir, "2086_scenario_8.5_results.rds"))
+# Example Usage: Run for multiple realizations
+base_dir <- "/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2"
+output_dir <- "/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2"
 
-## 3. Combining datasets  
-
-# 4.5
-drought_2006_45 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/2006_scenario_4.5_results.rds")
-drought_2026_45 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/2026_scenario_4.5_results.rds")
-drought_2046_45 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/2046_scenario_4.5_results.rds")
-drought_2066_45 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/2066_scenario_4.5_results.rds")
-drought_2086_45 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/2086_scenario_4.5_results.rds")
-
-drought_data_4.5 <- rbind(drought_2006_45, drought_2026_45,
-                          drought_2046_45, drought_2066_45, drought_2086_45)
-saveRDS(drought_data_4.5, file.path(data_dir, "drought_4.5_ALL.rds"))
-
-
-# 8.5
-drought_2006_85 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/2006_scenario_8.5_results.rds")
-drought_2026_85 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/2026_scenario_8.5_results.rds")
-drought_2046_85 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/2046_scenario_8.5_results.rds")
-drought_2066_85 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/2066_scenario_8.5_results.rds")
-drought_2086_85 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/projection/data/2/2086_scenario_8.5_results.rds")
-
-drought_data_8.5 <- rbind(drought_2006_85, drought_2026_85,
-                          drought_2046_85, drought_2066_85, drought_2086_85)
-saveRDS(drought_data_8.5, file.path(data_dir, "drought_8.5_ALL.rds"))
+# Run the function for realizations 1 through 10
+for (realization in 1:10) {
+  process_cmip6_realization(realization, base_dir, output_dir)
+}
 
 
 ```
