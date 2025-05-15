@@ -64,12 +64,10 @@ regression_data_lagged <- regression_data %>%
   na.omit()
  
 
-#### 5 LAGS #####
-pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3", "drought_lag4", "drought_lag5")], scale. = TRUE)
-regression_data_lagged$pca1 <- pca$x[, 1]
+#### 1 LAG #####
 
-reg_5 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county, data = regression_data_lagged)
-reg_5
+reg_1lag <- feols(log(stock_rate) ~ total_D + drought_lag1 + total_GDD + total_EDD + hay_stock_1000t| county, data = regression_data_lagged)
+reg_1lag
 
 ```
 
@@ -171,11 +169,7 @@ project_stocking_rate <- function(realization, output_dir, reg_model) {
       arrange(state, county, year) %>%
       group_by(state, county) %>%
       mutate(
-        drought_lag1 = lag(total_D, 1),
-        drought_lag2 = lag(total_D, 2),
-        drought_lag3 = lag(total_D, 3),
-        drought_lag4 = lag(total_D, 4),
-        drought_lag5 = lag(total_D, 5)
+        drought_lag1 = lag(total_D, 1)
       ) %>%
       ungroup() %>%
       na.omit()
@@ -183,16 +177,6 @@ project_stocking_rate <- function(realization, output_dir, reg_model) {
 
   regression_data_lagged_4.5 <- add_lagged_variables(joined_drought_hay_projected_4.5)
   regression_data_lagged_8.5 <- add_lagged_variables(joined_drought_hay_projected_8.5)
-
-  # Apply PCA on lagged drought variables
-  apply_pca <- function(data) {
-    pca <- prcomp(data[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3", "drought_lag4", "drought_lag5")], scale. = TRUE)
-    data$pca1 <- pca$x[, 1]
-    return(data)
-  }
-
-  regression_data_lagged_4.5 <- apply_pca(regression_data_lagged_4.5)
-  regression_data_lagged_8.5 <- apply_pca(regression_data_lagged_8.5)
 
   # Predict stocking rate using the regression model
   predict_stocking_rate <- function(data, model) {
@@ -230,7 +214,7 @@ project_stocking_rate <- function(realization, output_dir, reg_model) {
 output_dir <- "/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2"
 
 for (realization in 1:10) {
-  project_stocking_rate(realization, output_dir, reg_5)
+  project_stocking_rate(realization, output_dir, reg_1lag)
 }
 
 

@@ -16,9 +16,11 @@ editor: visual
 
 ### - Table 1. Summarizes key statistics for interpretation.
 
-### - Table 2. Main regression analysis results.
+### - Table 2. Correlation matrix for variables used in the stocking rate regression model.
 
-### - Table 3. Regression analysis results for all lagged (1-5) effects.
+### - Table 3. Main regression analysis results.
+
+### - Table 4. Regression analysis results for all lagged (1-5) effects.
 
 ### ===============================================
 
@@ -209,77 +211,60 @@ ft
 
 ```
 
-## Table 2. Regression analysis results for delayed drought effects.
+## Table 2. Correlation matrix for variables used in the stocking rate regression model.
+
 
 ```{r}
 
 # TABLE 2
-#### 5 LAGS #####
-pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3", "drought_lag4", "drought_lag5")], scale. = TRUE)
-regression_data_lagged$pca1 <- pca$x[, 1]
+corr_vars <- regression_data_lagged %>%
+  dplyr::select(
+    total_D, drought_lag1,
+    total_GDD, total_EDD,
+    hay_stock_1000t
+  ) %>%
+  na.omit()
 
+# Compute Pearson correlation matrix
+corr_matrix <- round(cor(corr_vars, method = "pearson"), 2)
 
-# Model 1
-reg_51 <- feols(log(stock_rate) ~ pca1 | county, data = regression_data_lagged)
-reg_51
-
-# Model 2
-reg_52 <- feols(log(stock_rate) ~ pca1 + total_GDD| county, data = regression_data_lagged)
-reg_52
-
-# Model 3
-reg_53 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD| county, data = regression_data_lagged)
-reg_53
-
-# Model 4
-reg_54 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t| county, data = regression_data_lagged)
-reg_54
-
-# Model 5
-reg_5 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county, data = regression_data_lagged)
-reg_5
+# Print matrix in console
+print(corr_matrix)
 
 
 ```
 
-## Table 3. Regression results for delayed drought effects.
+## Table 3. Regression analysis results for delayed drought effects.
+
 
 ```{r}
 
-## TABLE 3
-
+# TABLE 3
 #### 1 LAG #####
-pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1")], scale. = TRUE)
-regression_data_lagged$pca1 <- pca$x[, 1]
 
-reg_1 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county, data = regression_data_lagged)
-reg_1
+# Model 1
+reg_1lag_1 <- feols(log(stock_rate) ~ total_D | county, data = regression_data_lagged)
+reg_1lag_1
 
-#### 2 LAGS #####
-pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2")], scale. = TRUE)
-regression_data_lagged$pca1 <- pca$x[, 1]
 
-reg_2 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county , data = regression_data_lagged)
-reg_2
+# Model 2
+reg_1lag_2 <- feols(log(stock_rate) ~ total_D + drought_lag1| county, data = regression_data_lagged)
+reg_1lag_2
 
-#### 3 LAGS #####
-pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3")], scale. = TRUE)
-regression_data_lagged$pca1 <- pca$x[, 1]
 
-reg_3 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county , data = regression_data_lagged)
-reg_3
+# Model 3
+reg_1lag_3 <- feols(log(stock_rate) ~ total_D + drought_lag1 + total_GDD| county, data = regression_data_lagged)
+reg_1lag_3
 
-#### 4 LAGS #####
-pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3", "drought_lag4")], scale. = TRUE)
-regression_data_lagged$pca1 <- pca$x[, 1]
+# Model 4
+reg_1lag_4 <- feols(log(stock_rate) ~ total_D + drought_lag1 + total_GDD + total_EDD| county, data = regression_data_lagged)
+reg_1lag_4
 
-reg_4 <- feols(log(stock_rate) ~ pca1 + total_GDD + total_EDD + hay_stock_1000t + hay_stock_1000t^2| county , data = regression_data_lagged)
-reg_4
-
-#### 5 LAGS #####
-pca <- prcomp(regression_data_lagged[, c("total_D", "drought_lag1", "drought_lag2", "drought_lag3", "drought_lag4", "drought_lag5")], scale. = TRUE)
-regression_data_lagged$pca1 <- pca$x[, 1]
+# Model 5
+reg_1lag <- feols(log(stock_rate) ~ total_D + drought_lag1 + total_GDD + total_EDD + hay_stock_1000t| county, data = regression_data_lagged)
+reg_1lag
 
 
 
 ```
+
