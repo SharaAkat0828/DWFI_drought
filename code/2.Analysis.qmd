@@ -25,7 +25,7 @@ editor: visual
 # Assumptions
 dressing_pct <- 0.55
 AU <- 1000
-grazing_months <- 5 
+grazing_months <- 5
 
 # Merge pasturepand and inventory data
 merged_ALL <- left_join(pasture_data_ALL, beef_inv, by = c("year", "state", "county")) 
@@ -54,11 +54,7 @@ regression_data_lagged <- regression_data %>%
   arrange(state, county, year) %>% # Ensure data is sorted by state, county, and year
   group_by(state, county) %>% # Group by state and county
   mutate(
-    drought_lag1 = lag(total_D, 1), # 1-year lag
-    drought_lag2 = lag(total_D, 2), # 2-year lag
-    drought_lag3 = lag(total_D, 3), # 3-year lag
-    drought_lag4 = lag(total_D, 4), # 4-year lag
-    drought_lag5 = lag(total_D, 5)  # 5-year lag
+    drought_lag1 = lag(total_D, 1)
   ) %>%
   ungroup() %>% 
   na.omit()
@@ -156,9 +152,13 @@ project_stocking_rate <- function(realization, output_dir, reg_model) {
       )
   }
 
+  
   yearly_drought_data_projected_4.5 <- aggregate_yearly_data(growing_season_data_4.5)
   yearly_drought_data_projected_8.5 <- aggregate_yearly_data(growing_season_data_8.5)
 
+  yearly_drought_data_projected_4.5$total_D <-  -yearly_drought_data_projected_4.5$total_D 
+  yearly_drought_data_projected_8.5$total_D <-  -yearly_drought_data_projected_8.5$total_D 
+   
   # Merge with hay stocks data
   joined_drought_hay_projected_4.5 <- left_join(yearly_drought_data_projected_4.5, hay_all_stocks_1000t_national_projected, by = "year")
   joined_drought_hay_projected_8.5 <- left_join(yearly_drought_data_projected_8.5, hay_all_stocks_1000t_national_projected, by = "year")

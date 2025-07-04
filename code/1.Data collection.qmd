@@ -198,12 +198,14 @@ hay_all_stocks_1000t_national <- hay_all_stocks_1000t_3 %>%
 ```{r}
 dressing_pct <- 0.55
 cattle_weight <- readxl::read_xlsx("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/catsltr.xlsx", sheet = 2, skip = 3) %>% 
-  dplyr::select(1, 18) %>% 
+  # dplyr::select(1, 18) %>%  #cattle 
+  dplyr::select(1, 21) %>%  #cows
   `colnames<-`(c("date", "dressed_wt")) %>% 
   dplyr::mutate(live_wt = dressed_wt/dressing_pct,
-                year = year(date), month = month(date)) %>% 
-  group_by(year) %>% 
+                year = year(date), month = month(date)) %>%
+  group_by(year) %>%
   summarize(mean_live_wt = mean(live_wt, na.rm = TRUE))
+  
 ```
 
 ### 5. Retrieve weather data from PRISM
@@ -326,6 +328,7 @@ cattle_weight <- readxl::read_xlsx("/Users/sharaakat/Dropbox/akat_shara/DWFI_dro
 # )
 
 drought_final <- readRDS("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/RobustnessCheck/Data/combined_1981_2020_NEW.rds")
+drought_final$D <- -drought_final$D
 
 growing_season_data <- drought_final %>%
   filter(month >= 3 & month <= 10)  # Select only March to October

@@ -20,7 +20,7 @@ editor: visual
 
 ### - Table 3. Main regression analysis results.
 
-### - Table 4. Regression analysis results for all lagged (1-5) effects.
+### - Table A1. Robustness check.
 
 ### ===============================================
 
@@ -52,6 +52,8 @@ merged_ALL_national$beef_inv <- merged_ALL_national$beef_inv/1000000
 merged_ALL_national$pastureland_all_types <- merged_ALL_national$pastureland_all_types/1000000
 scaling_factor <- max(merged_ALL_national$pastureland_all_types) / max(merged_ALL_national$beef_inv)
 
+merged_ALL_national <- merged_ALL_national %>% 
+  filter(year != 1978)
 
 # FIGURE 1
 ggplot() +
@@ -151,7 +153,7 @@ grazing_months = 5
 merged_ALL_regional_SR <- left_join(merged_ALL_regional, cattle_weight, by = c("year")) %>%
   mutate(stock_rate = (beef_inv * mean_live_wt/AU * grazing_months)/total_pastureland_all_types) %>%
   dplyr::select(year, region, stock_rate) %>%
-  dplyr::filter(year != 1978) %>%
+  # dplyr::filter(year != 1978) %>%
   na.omit()
 
 
@@ -176,9 +178,11 @@ summary_table_wide <- summary_table %>%
 
 summary_table_wide <- summary_table_wide %>%
   mutate(
+    change_1980_1970 = ((Decade_1980 - Decade_1970) / Decade_1970) * 100,
     change_1990_1980 = ((Decade_1990 - Decade_1980) / Decade_1980) * 100,
-    change_2000_1990 = ((Decade_2000 - Decade_1990) / Decade_1980) * 100,
-    change_2010_2000 = ((Decade_2010 - Decade_2000) / Decade_1980) * 100
+    change_2000_1990 = ((Decade_2000 - Decade_1990) / Decade_1990) * 100,
+    change_2010_2000 = ((Decade_2010 - Decade_2000) / Decade_2000) * 100,
+    change_2020_2010 = ((Decade_2020 - Decade_2010) / Decade_2010) * 100
   )
 
 # Calculate national average
@@ -194,9 +198,11 @@ national_avg <- merged_ALL_regional_SR %>%
     names_prefix = "Decade_"
   ) %>%
   mutate(
+    change_1980_1970 = ((Decade_1980 - Decade_1970) / Decade_1970) * 100,
     change_1990_1980 = ((Decade_1990 - Decade_1980) / Decade_1980) * 100,
-    change_2000_1990 = ((Decade_2000 - Decade_1990) / Decade_1980) * 100,
-    change_2010_2000 = ((Decade_2010 - Decade_2000) / Decade_1980) * 100
+    change_2000_1990 = ((Decade_2000 - Decade_1990) / Decade_1990) * 100,
+    change_2010_2000 = ((Decade_2010 - Decade_2000) / Decade_2000) * 100,
+    change_2020_2010 = ((Decade_2020 - Decade_2010) / Decade_2010) * 100
   )
 
 # Add a "region" label for national average
@@ -212,7 +218,6 @@ ft
 ```
 
 ## Table 2. Correlation matrix for variables used in the stocking rate regression model.
-
 
 ```{r}
 
@@ -235,7 +240,6 @@ print(corr_matrix)
 ```
 
 ## Table 3. Regression analysis results for delayed drought effects.
-
 
 ```{r}
 
@@ -268,3 +272,55 @@ reg_1lag
 
 ```
 
+## Table A1. Robustness check
+
+```{r}
+
+# TABLE 4
+drought_final <- readRDS("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/RobustnessCheck/Data/combined_1981_2020_NEW.rds")
+drought_final$D <- -drought_final$D
+
+
+# 3-7, 4-8, 5-9, 6-10
+growing_season_data <- drought_final %>%
+  filter(month >= 6 & month <= 10)  # Select only March to October
+
+# Aggregate to yearly level
+yearly_drought_data <- growing_season_data %>%
+  group_by(year, STATE_NAME, NAME) %>%  # Group by year, state, and county
+  summarize(
+    total_D = sum(D, na.rm = TRUE),  # Total drought index
+    total_GDD = sum(GDD, na.rm = TRUE),  # Total Growing Degree Days
+    total_EDD = sum(EDD, na.rm = TRUE)  # Total Extreme Degree Days
+  ) %>% 
+  rename(state = STATE_NAME,
+         county = NAME) %>% 
+  dplyr::select(year, state, county, total_D, total_GDD, total_EDD)
+
+yearly_drought_data$state <- tolower(yearly_drought_data$state)
+yearly_drought_data$county <- tolower(yearly_drought_data$county)
+
+joined_drought_hay <- left_join(yearly_drought_data, hay_all_stocks_1000t_national, by = c("year")) 
+
+regression_data <- left_join(joined_drought_hay, SR_data, by = c("year", "state", "county")) 
+regression_data <- regression_data[!is.infinite(regression_data$stock_rate), ]
+
+# get lagged D values
+regression_data_lagged <- regression_data %>%
+  arrange(state, county, year) %>% # Ensure data is sorted by state, county, and year
+  group_by(state, county) %>% # Group by state and county
+  mutate(
+    drought_lag1 = lag(total_D, 1) # 1-year lag
+  ) %>%
+  ungroup() %>% 
+  na.omit()
+ 
+
+#### 1 LAG #####
+
+reg_1lag <- feols(log(stock_rate) ~ total_D + drought_lag1 + total_GDD + total_EDD + hay_stock_1000t| county, data = regression_data_lagged)
+reg_1lag
+
+
+
+```
