@@ -1,0 +1,384 @@
+---
+title: "Analysis"
+format: html
+editor: visual
+---
+
+### ==============================================
+
+### Analysis Script
+
+### This script performs regression analysis and climate scenario simulations:
+
+### 1. Estimate Stocking Rates
+
+### 2.Estimate regression model 
+
+### 3. Estimate projected stocking rates
+
+# 4. Analysis of RCP4.5 and RCP8.5
+
+
+### ===============================================
+
+### 1. Estimate Stocking Rates
+
+```{r}
+
+AU <- 1000  # reference animal unit weight (lbs)
+state_to_region <- function(state_name) {
+  state_name <- tolower(state_name)
+  dplyr::case_when(
+    state_name %in% c("michigan", "wisconsin", "minnesota")                                                                                      ~ "Lake States",
+    state_name %in% c("iowa", "illinois", "indiana", "ohio", "missouri")                                                                         ~ "Corn Belt",
+    state_name %in% c("north dakota", "south dakota", "nebraska", "kansas")                                                                      ~ "Northern Plains",
+    state_name %in% c("oklahoma", "texas")                                                                                                       ~ "Southern Plains",
+    state_name %in% c("arkansas", "louisiana", "mississippi")                                                                                    ~ "Delta States",
+    state_name %in% c("alabama", "south carolina", "georgia", "florida")                                                                         ~ "Southeast",
+    state_name %in% c("west virginia", "kentucky", "virginia", "tennessee", "north carolina")                                                    ~ "Appalachia",
+    state_name %in% c("maine", "new hampshire", "vermont", "massachusetts", "rhode island",
+                       "connecticut", "new york", "new jersey", "pennsylvania", "delaware", "maryland") ~ "Northeast",
+    state_name %in% c("montana", "idaho", "wyoming", "colorado", "utah", "nevada", "arizona", "new mexico")                                     ~ "Mountain",
+    state_name %in% c("washington", "oregon", "california")                                                                                      ~ "Pacific",
+    TRUE ~ NA_character_
+  )
+}
+
+# Merge pastureland and beef inventory, assign regions and grazing months
+merged_ALL <- left_join(pasture_data_ALL, beef_inv, by = c("year", "state", "county")) %>%
+  mutate(
+    region = state_to_region(state),
+    grazing_months = case_when(
+      region == "Appalachia"      ~  8,  # mild winters, long forage season
+      region == "Corn Belt"       ~  7,  # moderate climate, grazing typically Apr–Oct
+      region == "Delta States"    ~  7,  # warm climate, long-season grasses
+      region == "Lake States"     ~  6,  # shorter season due to northern latitude
+      region == "Mountain"        ~  6,  # high elevation, snow cover → short grazing
+      region == "Northeast"       ~  6,  # cool climate limits grazing to late spring–early fall
+      region == "Northern Plains" ~  7,  # harsh winters
+      region == "Pacific"         ~  8,  # long season in CA/OR/WA
+      region == "Southeast"       ~  9,  # warm year-round climate
+      region == "Southern Plains" ~  7,  # long warm season, mix of native & improved pastures
+      TRUE                        ~ NA_real_
+    )
+  )
+
+# Inventory-weighted national average grazing months by year
+weighted_national_grazing <- merged_ALL %>%
+  group_by(year, region) %>%
+  summarize(
+    total_inv      = sum(beef_inv, na.rm = TRUE),
+    grazing_months = first(grazing_months),
+    .groups = "drop"
+  ) %>%
+  group_by(year) %>%
+  summarize(
+    weighted_grazing_months = sum(total_inv * grazing_months, na.rm = TRUE) / sum(total_inv, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+# Compute stocking rate (AUY/acre) at county level
+# AUE adjusts for cow weight relative to the 1,000 lb reference animal
+merged_ALL_SR <- left_join(merged_ALL, cattle_weight, by = "year") %>%
+  na.omit() %>%
+  mutate(
+    AUE = case_when(
+      mean_live_wt <= 900  ~ (mean_live_wt + 100) / AU,
+      mean_live_wt >= 1100 ~ (mean_live_wt - 100) / AU,
+      TRUE                 ~ 1
+    ),
+    AUs                  = AUE * beef_inv,
+    stock_rate_AUY       = (AUs * grazing_months / 12) / pastureland_all_types,
+    stock_rate_acrePerAU = 1 / stock_rate_AUY
+  ) %>%
+  dplyr::filter(
+    year != 1978,
+    pastureland_all_types > 0,   # drop zero pastureland (division by zero)
+    is.finite(stock_rate_AUY),   # drop any remaining Inf
+    stock_rate_AUY <= 10         # drop implausible outliers (data errors)
+  ) %>%
+  dplyr::select(year, state, county, stock_rate_AUY, stock_rate_acrePerAU, region)
+
+
+
+merged_ALL_SR_regional <- left_join(merged_ALL, cattle_weight, by = "year") %>%
+  na.omit()
+
+regional_SR <- merged_ALL_SR_regional %>%
+  mutate(
+    AUE = case_when(
+      mean_live_wt <= 900  ~ (mean_live_wt + 100) / 1000,
+      mean_live_wt >= 1100 ~ (mean_live_wt - 100) / 1000,
+      TRUE                 ~ 1
+    ),
+    AUs            = AUE * beef_inv,
+    stock_rate_AUY = (AUs * (grazing_months / 12)) / pastureland_all_types
+  ) %>%
+  filter(
+    pastureland_all_types > 0,
+    is.finite(stock_rate_AUY),
+    stock_rate_AUY <= 10
+  ) %>%
+  group_by(region, year) %>%
+  summarise(
+    total_AUs          = sum(AUs,                na.rm = TRUE),
+    total_pastureland  = sum(pastureland_all_types, na.rm = TRUE),
+    avg_grazing_months = weighted.mean(grazing_months,
+                                       w    = pastureland_all_types,
+                                       na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    stock_rate_AUY_regional      = (total_AUs * (avg_grazing_months / 12)) / 
+                                    total_pastureland,
+    stock_rate_acrePerAU_regional = 1 / stock_rate_AUY_regional
+  )
+
+```
+
+
+### 2.Estimate regression model 
+
+```{r}
+
+regression_data <- left_join(drought_final, hay_all_stocks_1000t, 
+                              by = c("year", "state")) %>%
+  left_join(merged_ALL_SR, by = c("year", "state", "county")) %>%
+  filter(is.finite(stock_rate_AUY))
+
+drought_lag_lookup <- drought_final %>%
+  mutate(year_lead = year + 1) %>%   # this year's D becomes next year's lag
+  select(state, county, year_lead, drought_lag1 = total_D)
+
+hay_lag_lookup <- hay_all_stocks_1000t %>%
+  mutate(year_lead = year + 1) %>%
+  select(state, year_lead, hay_stock_1000t_lagged = hay_stock_1000t)
+
+regression_data_lagged <- regression_data %>%
+  # proper 1-year drought lag
+  left_join(drought_lag_lookup,
+            by = c("state", "county", "year" = "year_lead")) %>%
+  # proper 1-year hay lag
+  left_join(hay_lag_lookup,
+            by = c("state", "year" = "year_lead")) %>%
+  mutate(trend = year - min(year)) %>%
+  na.omit()
+
+
+reg_1lag <- feols(
+  log(stock_rate_AUY) ~ total_D + drought_lag1 + 
+                         total_GDD + total_EDD + 
+                         hay_stock_1000t_lagged | county + year,
+  data = regression_data_lagged)
+
+
+# Compute neighbor average
+state_hay_lookup <- hay_lag_lookup %>%
+  rename(year = year_lead)  # back to actual year for joining
+
+neighbor_hay <- state_hay_lookup %>%
+  left_join(neighbors_long, by = "state") %>%
+  left_join(
+    state_hay_lookup %>%
+      rename(neighbor_state = state,
+             neighbor_hay   = hay_stock_1000t_lagged),
+    by = c("year", "neighbor_state")
+  ) %>%
+  group_by(year, state) %>%
+  summarise(
+    neighbor_avg_hay_stock_1000t_lagged = mean(neighbor_hay, na.rm = TRUE),
+    n_neighbors_used                    = sum(!is.na(neighbor_hay)),
+    .groups = "drop"
+  )
+
+# === Robustness model — neighbor hay ===
+regression_data_lagged_neighbour <- regression_data_lagged %>%
+  left_join(neighbor_hay, by = c("year", "state"))
+
+reg_1_neighbour <- feols(
+    log(stock_rate_AUY) ~ total_D + drought_lag1 +
+                           total_GDD + total_EDD +
+                           neighbor_avg_hay_stock_1000t_lagged | county + year, data = regression_data_lagged_neighbour
+  )
+
+```
+
+### 3. Estimate projected stocking rates
+
+```{r}
+
+# ## Projected Hay Stocks
+# hay_proj_for_SR <- readRDS("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/RobustnessCheck/Data/Hay_Projected.rds")
+# 
+# hay_proj_45_clean <- hay_proj_for_SR %>%
+#   dplyr::filter(scenario == "RCP4.5") 
+# hay_proj_45_clean$year <- hay_proj_45_clean$year_lead
+# 
+# hay_proj_85_clean <- hay_proj_for_SR %>%
+#   dplyr::filter(scenario == "RCP8.5") 
+# hay_proj_85_clean$year <- hay_proj_85_clean$year_lead
+# 
+# 
+# # ── County FEs from reg_1lag ──────────────────────────────────────────────────
+# county_fe_dt <- data.table(
+#   county    = names(fixef(reg_1lag)$county),
+#   county_fe = as.numeric(fixef(reg_1lag)$county)
+# )
+# sr_b <- coef(reg_1lag)
+# 
+# # ── Region grazing season lookup ──────────────────────────────────────────────
+# region_grazing_months <- data.frame(
+#   region      = c("Appalachia","Corn Belt","Delta States","Lake States",
+#                   "Mountain","Northeast","Northern Plains",
+#                   "Pacific","Southeast","Southern Plains"),
+#   start_month = c(3, 4, 4, 4, 4, 4, 4, 3, 3, 4),
+#   end_month   = c(10, 10, 10, 9, 9, 9, 10, 10, 11, 10)
+# )
+# 
+# # ── Main projection function ──────────────────────────────────────────────────
+# project_stocking_rate <- function(realization, output_dir) {
+# 
+#   file_45 <- readRDS(file.path(output_dir, sprintf("Weather_r%02d_4.5.rds", realization)))
+#   file_85 <- readRDS(file.path(output_dir, sprintf("Weather_r%02d_8.5.rds", realization)))
+# 
+#   # --- Filter to grazing season per region -----------------------------------
+#   filter_grazing_season <- function(data) {
+#     data %>%
+#       mutate(region = state_to_region(STATE_NAME)) %>%
+#       filter(!is.na(region)) %>%
+#       left_join(region_grazing_months, by = "region") %>%
+#       filter(month >= start_month & month <= end_month) %>%  # BUG FIX: was <- instead of <=
+#       group_by(year, STATE_NAME, NAME) %>%
+#       summarise(
+#         total_D   = sum(monthly_D,   na.rm = TRUE),
+#         total_GDD = sum(monthly_GDD, na.rm = TRUE),
+#         total_EDD = sum(monthly_EDD, na.rm = TRUE),
+#         .groups = "drop"
+#       ) %>%
+#       rename(state = STATE_NAME, county = NAME) %>%
+#       mutate(state  = tolower(state),
+#              county = tolower(county))
+#   }
+# 
+#   annual_45 <- filter_grazing_season(file_45)
+#   annual_85 <- filter_grazing_season(file_85)
+# 
+#   # --- Merge projected hay stocks --------------------------------------------
+#   joined_45 <- annual_45 %>%
+#     left_join(hay_proj_45_clean %>%
+#                 dplyr::select(year, state, hay_stock_1000t_lagged),
+#               by = c("year", "state"))
+# 
+#   joined_85 <- annual_85 %>%
+#     left_join(hay_proj_85_clean %>%
+#                 dplyr::select(year, state, hay_stock_1000t_lagged),
+#               by = c("year", "state"))
+# 
+#   # --- Add lagged D within county --------------------------------------------
+#   add_lags <- function(data) {
+#     data %>%
+#       arrange(state, county, year) %>%
+#       group_by(state, county) %>%
+#       mutate(drought_lag1 = dplyr::lag(total_D, 1)) %>%
+#       ungroup() %>%
+#       filter(!is.na(drought_lag1), !is.na(hay_stock_1000t_lagged))
+#   }
+# 
+#   lagged_45 <- add_lags(joined_45)
+#   lagged_85 <- add_lags(joined_85)
+# 
+#   # --- Predict SR: manual coefficients + county FE (drop year FE) -----------
+#   # Using predict() with fixest on future years fails — year FEs don't exist.
+#   # Correct approach: beta*X + county_FE only (S&R style out-of-sample)
+#   predict_SR <- function(data, scenario) {
+#     as.data.table(data) %>%
+#       merge(county_fe_dt, by = "county", all.x = TRUE) %>%
+#       .[, log_SR_hat :=
+#           sr_b["total_D"]                * total_D              +
+#           sr_b["drought_lag1"]           * drought_lag1         +
+#           sr_b["total_GDD"]              * total_GDD            +
+#           sr_b["total_EDD"]              * total_EDD            +
+#           sr_b["hay_stock_1000t_lagged"] * hay_stock_1000t_lagged +
+#           county_fe] %>%
+#       .[, SR_hat   := exp(log_SR_hat)] %>%
+#       .[, scenario := scenario]
+#   }
+# 
+#   SR_45 <- predict_SR(lagged_45, "RCP 4.5")
+#   SR_85 <- predict_SR(lagged_85, "RCP 8.5")
+# 
+#   # --- Save ------------------------------------------------------------------
+#   combined <- bind_rows(SR_45, SR_85) %>%
+#     mutate(realization = sprintf("r%02d", realization))
+# 
+#   saveRDS(combined,
+#           file.path(output_dir, sprintf("SRate_r%02d.rds", realization)))
+# 
+#   cat(sprintf("Saved realization r%02d\n", realization))
+# }
+# 
+# # ── Run ───────────────────────────────────────────────────────────────────────
+# output_dir <- "/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2"
+# for (realization in 1:10) {
+#   project_stocking_rate(realization, output_dir)
+# }
+
+# Join all realizatino data into 1 and get average Stocking Rates
+strate_01 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/SRate_r01.rds")
+strate_02 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/SRate_r02.rds")
+strate_03 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/SRate_r03.rds")
+strate_04 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/SRate_r04.rds")
+strate_05 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/SRate_r05.rds")
+strate_06 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/SRate_r06.rds")
+strate_07 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/SRate_r07.rds")
+strate_08 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/SRate_r08.rds")
+strate_09 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/SRate_r09.rds")
+strate_10 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/SRate_r10.rds")
+
+combined_data <- bind_rows(strate_01, strate_02, strate_03, strate_04, strate_05,
+                           strate_06, strate_07, strate_08, strate_09, strate_10)
+
+
+average_stock_rate_US <- combined_data %>%
+  group_by(year, scenario) %>%
+  summarise(
+    mean_projected_stock_rate = mean(SR_hat, na.rm = TRUE),
+    sd_projected_stock_rate = sd(SR_hat, na.rm = TRUE),
+    n = sum(!is.na(SR_hat)),
+    se_projected_stock_rate = sd_projected_stock_rate / sqrt(n),
+    ci_lower = mean_projected_stock_rate - 1.96 * se_projected_stock_rate,
+    ci_upper = mean_projected_stock_rate + 1.96 * se_projected_stock_rate,
+    .groups = "drop"
+  )
+
+```
+
+
+### 4. Analysis of RCP4.5 and RCP8.5
+
+```{r}
+
+output_dir <- "/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2"
+all_r_full <- map_dfr(1:10, function(r) {
+  r45 <- readRDS(file.path(output_dir, sprintf("Weather_r%02d_4.5.rds", r)))
+  r85 <- readRDS(file.path(output_dir, sprintf("Weather_r%02d_8.5.rds", r)))
+  bind_rows(
+    r45 %>% mutate(scenario = "RCP4.5", realization = r),
+    r85 %>% mutate(scenario = "RCP8.5", realization = r)
+  )
+}) %>%
+  filter(year >= 2022) %>%
+  group_by(year, scenario) %>%
+  summarise(
+    mean_tmax = mean(monthly_tmax, na.rm = TRUE),
+    mean_GDD  = mean(monthly_GDD,  na.rm = TRUE),
+    mean_EDD  = mean(monthly_EDD,  na.rm = TRUE),
+    mean_D    = mean(monthly_D,    na.rm = TRUE),
+    mean_ppt  = mean(monthly_ppt,  na.rm = TRUE),
+    .groups   = "drop"
+  )
+
+```
+
+

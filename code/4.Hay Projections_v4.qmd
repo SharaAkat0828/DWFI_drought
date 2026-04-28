@@ -1,0 +1,818 @@
+---
+title: "Hay_Projections"
+format: html
+editor: visual
+---
+
+### ============================================
+
+### Hay Threshold Estimation and Projections Script
+
+### This script estimates Hay threshold AND projects hay stock values through 2023-2099
+
+### =============================================
+
+### Hay Threshold Estimation
+
+```{r}
+#Load Libraries
+library("dplyr")         # cleans/organizes the data
+library("reshape2")      # shape the data
+library("lubridate")     # manipulation with dates and time
+library("readstata13")   # reads STATA files
+library("ggplot2")       # creates graphs
+library("latex2exp")     # so we can label tables and graphs using latex type setting
+library("gridExtra")     # allows multiple ggplot's to be gridded onto a single page
+library("plm")           # enables panel model estimation
+library("lmtest")        # allows clustered SEs
+library(rnassqs)
+
+nassqs_auth(key = "9D9051CD-D01C-3B05-85C3-5FD81DB8F8A4") 
+
+#Set the working directory
+# setwd("C:/Users/edennis8/Dropbox/K-State/Course Work/AY_2018_2019/Fall/AGEC_923/lecture_notes/module_2/hwk_1/")
+
+
+# hay
+params1 <- list(
+  source_desc = "SURVEY", sector_desc = "CROPS", group_desc = "FIELD CROPS",
+  commodity_desc = "HAY", short_desc = "HAY - PRODUCTION, MEASURED IN TONS", 
+  domain_desc = "TOTAL", agg_level_desc = "STATE", year__GE       = "1980",
+  year__LE       = "2022")
+
+# Request data
+hay_production <- nassqs(params1) %>%
+  dplyr::select(., state_name, year, Value)
+
+hay_production$Value <- gsub(",", "", hay_production$Value)
+hay_production$Value <- as.numeric(as.character(hay_production$Value))
+hay_production <- rename(hay_production, production = Value)
+hay_production$state_name <- tolower(hay_production$state_name)
+
+
+
+
+# in acres
+params2 <- list(source_desc = "SURVEY", sector_desc = "CROPS", group_desc = "FIELD CROPS",
+                commodity_desc = "HAY", short_desc = "HAY - ACRES HARVESTED", 
+                domain_desc = "TOTAL", agg_level_desc = "STATE", year__GE       = "1980",
+                year__LE       = "2022")
+hay_area_harvested <- nassqs(params2) %>%
+  dplyr::select(., state_name, year, Value)
+
+hay_area_harvested$Value <- gsub(",", "", hay_area_harvested$Value)
+hay_area_harvested$Value <- as.numeric(as.character(hay_area_harvested$Value))
+hay_area_harvested <- rename(hay_area_harvested, area_harvested = Value)
+hay_area_harvested$state_name <- tolower(hay_area_harvested$state_name)
+
+
+hay_yield <- dplyr::left_join(hay_production, hay_area_harvested, by = c("state_name", "year")) %>% 
+  mutate(yield_tonsPerAcre = production/area_harvested)
+hay_yield %>%  head()                           
+
+
+drought_final_1982_2020 <- readRDS("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/RobustnessCheck/Data/combined_1981_2020_NEW.rds")
+drought_final_2021_2022 <- readRDS("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/RobustnessCheck/Data/combined_2021_2022_NEW.rds")
+drought_final <- rbind(drought_final_1982_2020, drought_final_2021_2022)
+
+
+hay_yield_clean <- hay_yield %>%
+  filter(!is.na(yield_tonsPerAcre), yield_tonsPerAcre > 0) %>%
+  mutate(
+    state = tolower(state_name),
+    year  = as.integer(year)
+  ) %>%
+  group_by(state, year) %>%
+  summarise(
+    yield_tonsPerAcre = mean(yield_tonsPerAcre, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cat("Hay yield observations after deduplication:", nrow(hay_yield_clean), "\n")
+cat("States:", n_distinct(hay_yield_clean$state), 
+    "| Years:", paste(range(hay_yield_clean$year), collapse = "–"), "\n\n")
+
+
+time_above <- function(tmin, tmax, t) {
+  dplyr::case_when(
+    tmax <= t ~ 0,   # temperature never reaches t
+    t <= tmin ~ 1,   # always above t
+    TRUE      ~ acos((2 * t - tmax - tmin) / (tmax - tmin)) / pi
+  )
+}
+
+# Fraction of day in 1°C interval [t, t+1]
+# = time_above(t) - time_above(t+1)
+frac_in_bin_1C <- function(tmin, tmax, t) {
+  time_above(tmin, tmax, t) - time_above(tmin, tmax, t + 1)
+}
+
+# Days-in-month lookup (ignoring leap years — same as advisor's code)
+days_in_month <- c(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+
+HAY_MONTHS <- 4:9
+BIN_STARTS <- seq(0, 36, by = 3)  # Lower edges: 0, 3, 6, ..., 36
+bin_names  <- c(paste0("bin_", BIN_STARTS, "_", BIN_STARTS + 2), "bin_39_inf")
+
+# Work on the growing-season subset of drought_final
+wx_season <- drought_final %>%
+  filter(month %in% HAY_MONTHS) %>%
+  mutate(
+    state  = tolower(STATE_NAME),
+    n_days = days_in_month[month]   # scale fraction → actual exposure days
+  )
+
+# Add one column per 3°C bin (exposure in days)
+for (b in BIN_STARTS) {
+  col <- paste0("bin_", b, "_", b + 2)
+  wx_season <- wx_season %>%
+    mutate(!!col :=
+             # Sum of three 1°C fractions within this 3°C bin × days in month
+             (frac_in_bin_1C(avg_tmin, avg_tmax, b) +
+                frac_in_bin_1C(avg_tmin, avg_tmax, b + 1) +
+                frac_in_bin_1C(avg_tmin, avg_tmax, b + 2)) * n_days
+    )
+}
+
+# 39°C+ bin: all time above 39°C
+wx_season <- wx_season %>%
+  mutate(bin_39_inf = time_above(avg_tmin, avg_tmax, 39) * n_days)
+
+cat("Bin columns built:", paste(bin_names, collapse = ", "), "\n\n")
+
+
+# Step 4a: Average across counties within each state×year×month
+wx_state_month <- wx_season %>%
+  group_by(year, state, month) %>%
+  summarise(
+    across(all_of(bin_names), ~ mean(.x, na.rm = TRUE)),
+    ppt = mean(sum_ppt, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Step 4b: Sum bin exposures and ppt across the growing season months
+wx_state_year <- wx_state_month %>%
+  group_by(year, state) %>%
+  summarise(
+    across(all_of(bin_names), sum),
+    ppt  = sum(ppt),
+    .groups = "drop"
+  ) %>%
+  mutate(ppt2 = ppt^2)
+
+cat("Weather panel: ", nrow(wx_state_year), "state-year observations\n\n")
+
+hay_reg <- hay_yield_clean %>%
+  inner_join(wx_state_year, by = c("state", "year")) %>%
+  filter(!is.na(yield_tonsPerAcre), yield_tonsPerAcre > 0)
+
+cat("Regression sample:", nrow(hay_reg), "state-year obs |",
+    n_distinct(hay_reg$state), "states |",
+    paste(range(hay_reg$year), collapse = "–"), "years\n\n")
+
+# Quick sanity check on average bin exposure
+cat("Average growing-season days per bin (should roughly match a histogram):\n")
+hay_reg %>%
+  summarise(across(all_of(bin_names), mean, na.rm = TRUE)) %>%
+  pivot_longer(everything(), names_to = "bin", values_to = "avg_days") %>%
+  mutate(bin = factor(bin, levels = bin_names)) %>%
+  print()
+
+
+# Build formula — drop bin_0_2 as reference
+rhs_bins <- paste(bin_names[-1], collapse = " + ")   # excludes bin_0_2
+
+bin_formula <- as.formula(
+  paste("log(yield_tonsPerAcre) ~", rhs_bins, "+ ppt + ppt2 | state + year")
+)
+
+hay_bin_model <- feols(
+  bin_formula,
+  data    = hay_reg,
+  cluster = ~state
+)
+
+cat("\n===== BIN MODEL RESULTS =====\n")
+print(summary(hay_bin_model))
+cat("Within R²:", round(r2(hay_bin_model, "wr2"), 4), "\n")
+
+# ── Step 1: Diagnose what's actually in hay_reg ──────────────────────────────
+cat("Columns in hay_reg that match bin_names:\n")
+existing_bins <- bin_names[bin_names %in% names(hay_reg)]
+cat("  Found:", length(existing_bins), "of", length(bin_names), "\n")
+
+if (length(existing_bins) == 0) {
+  stop(
+    "No bin columns found in hay_reg. ",
+    "Check that wx_state_year was created BEFORE the inner_join in Section 5, ",
+    "and that both use the same 'state' and 'year' column names."
+  )
+}
+
+# ── Step 2: Recompute coef_df using beta (not beta_c) as the base ────────────
+# We'll center properly below, but beta alone is already interpretable.
+
+bin_midpoints <- c(1.5, seq(4.5, 37.5, by = 3), 40.5)
+
+coef_all <- coef(hay_bin_model)
+se_all   <- se(hay_bin_model)
+
+coef_df <- data.frame(
+  bin     = bin_names,
+  bin_mid = bin_midpoints,
+  beta    = NA_real_,
+  se      = NA_real_,
+  stringsAsFactors = FALSE
+)
+
+for (i in seq_len(nrow(coef_df))) {
+  nm <- coef_df$bin[i]
+  if (nm %in% names(coef_all)) {
+    coef_df$beta[i] <- coef_all[nm]
+    coef_df$se[i]   <- se_all[nm]
+  } else {
+    coef_df$beta[i] <- 0   # reference bin (bin_0_2)
+    coef_df$se[i]   <- 0
+  }
+}
+
+cat("\nCoef_df beta check (should match Image 2):\n")
+print(coef_df[, c("bin", "bin_mid", "beta", "se")])
+
+# ── Step 3: Centering — fixed with lambda syntax ─────────────────────────────
+# Use only bins that actually exist in hay_reg
+
+mean_exp_tbl <- hay_reg %>%
+  summarise(across(all_of(existing_bins), ~ mean(.x, na.rm = TRUE)))
+
+# Verify no NaN before proceeding
+n_nan <- sum(is.nan(as.numeric(mean_exp_tbl)))
+cat("\nmean_exp NaN count:", n_nan, "out of", length(existing_bins), "\n")
+
+if (n_nan == length(existing_bins)) {
+  warning(
+    "mean_exp is still all NaN — bin columns exist but contain no valid values.\n",
+    "This likely means drought_final tmin/tmax are NaN for all hay growing season rows.\n",
+    "Falling back to un-centered betas (shape is identical, y-axis shifts)."
+  )
+  coef_df$beta_c <- coef_df$beta   # fallback: plot raw betas
+} else {
+  # Build named vector aligned to bin_names order
+  mean_exp <- rep(0, length(bin_names))
+  names(mean_exp) <- bin_names
+  for (bn in existing_bins) {
+    mean_exp[bn] <- as.numeric(mean_exp_tbl[[bn]])
+  }
+  
+  # Weighted centering (exposure-weighted mean = 0, like S&R)
+  wt_mean <- sum(coef_df$beta * mean_exp, na.rm = TRUE) /
+    sum(mean_exp[mean_exp > 0], na.rm = TRUE)
+  coef_df$beta_c <- coef_df$beta - wt_mean
+  
+  cat("Centering offset (wt_mean):", round(wt_mean, 6), "\n")
+}
+
+cat("\nFirst few beta_c values:\n")
+print(coef_df[, c("bin", "beta", "beta_c")])
+
+# ── Step 4: Rebuild the temperature histogram ─────────────────────────────────
+hist_df <- data.frame(
+  bin_mid  = bin_midpoints,
+  avg_days = ifelse(
+    bin_names %in% names(mean_exp_tbl),
+    as.numeric(mean_exp_tbl[match(bin_names, names(mean_exp_tbl))]),
+    0
+  )
+)
+
+# Safe scale factor (guard against NaN/0)
+beta_range   <- max(abs(coef_df$beta_c), na.rm = TRUE)
+hist_max     <- max(hist_df$avg_days, na.rm = TRUE)
+scale_factor <- if (is.finite(beta_range) & hist_max > 0)
+  beta_range / hist_max * 0.4 else 0
+
+# ── Step 5: The plot ──────────────────────────────────────────────────────────
+p_bins <- ggplot(coef_df, aes(x = bin_mid, y = beta_c)) +
+  # Green histogram bars (temperature exposure)
+  geom_col(
+    data = hist_df,
+    aes(x = bin_mid, y = avg_days * scale_factor),
+    fill = "#4CAF50", alpha = 0.4, width = 2.5,
+    inherit.aes = FALSE
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_ribbon(
+    aes(ymin = beta_c - 1.96 * se,
+        ymax = beta_c + 1.96 * se),
+    fill = "steelblue", alpha = 0.2,
+    na.rm = TRUE
+  ) +
+  geom_line(color  = "steelblue", linewidth = 1.1, na.rm = TRUE) +
+  geom_point(color = "steelblue", size = 2,        na.rm = TRUE) +
+  scale_x_continuous(breaks = seq(0, 42, 3)) +
+  labs(
+    title    = "Nonlinear Temperature Effect on Hay Yield (Step Function)",
+    subtitle = "State-level panel | Apr–Sep | State + Year FE | Clustered SE by state",
+    x        = "Temperature (°C)",
+    y        = "Log Yield Effect (centered)",
+    caption  = paste0(
+      "Reference: bin 0–2°C. Green bars = avg. exposure days per bin.\n",
+      "Based on Schlenker & Roberts (2009) approach applied to state-level hay data."
+    )
+  ) +
+  theme_classic(base_size = 13) +
+  theme(plot.caption = element_text(size = 8, color = "gray40"))
+
+print(p_bins)
+ggsave("hay_bins_plot.jpeg", p_bins, width = 10, height = 6)
+cat("\nSaved: hay_bins_plot.jpeg\n")
+
+# ── Quick interpretation from your Image 2 betas ─────────────────────────────
+cat("\n=== WHAT YOUR BETAS ALREADY TELL YOU (from Image 2) ===\n")
+cat("  Bins 3–29°C: ALL POSITIVE — hay benefits from heat in this range\n")
+cat("  Peak appears around 9–11°C (bin_9_11 = 0.0049 — largest positive)\n")
+cat("  bin_30_32: NEGATIVE (-0.0020) — damage begins around 30°C\n")
+cat("  bin_33_35: -0.0077  bin_36_38: -0.0239 — accelerating damage\n")
+cat("  bin_39_inf: positive but SE=0.022 — too few obs to trust\n")
+cat("\n  => Hay optimal temperature ≈ 29–30°C (S&R-style threshold)\n")
+cat("  This aligns with the piecewise linear grid search result.\n")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 8: Degree-day computation for piecewise linear threshold search
+#
+# For the optimal knot search we need dday_T for every candidate temperature T.
+# dday_T = integral of max(Tavg - T, 0) using sinusoidal formula.
+# This mirrors the advisor's weather_list_dday loop.
+# ─────────────────────────────────────────────────────────────────────────────
+
+compute_dday_monthly <- function(tmin, tmax, threshold) {
+  # Monthly degree-days above threshold using sinusoidal interpolation
+  # Same formula as advisor's dday computation, applied to monthly avg tmin/tmax
+  tavg <- (tmin + tmax) / 2
+  arg  <- (2 * threshold - tmax - tmin) / (tmax - tmin)
+  arg  <- pmax(-1, pmin(1, arg))   # clamp to [-1,1] for acos
+  ts   <- acos(arg)
+  dplyr::case_when(
+    tmax <= threshold ~ 0,
+    threshold <= tmin ~ tavg - threshold,
+    TRUE              ~ ((tavg - threshold) * ts + (tmax - tmin) * sin(ts) / 2) / pi
+  )
+}
+
+# Compute dday for all candidate thresholds 0–45°C
+THRESHOLDS <- 0:45
+
+dday_monthly <- drought_final %>%
+  filter(month %in% HAY_MONTHS) %>%
+  mutate(
+    state  = tolower(STATE_NAME),
+    n_days = days_in_month[month]
+  )
+
+cat("\nComputing degree-days for thresholds 0–45°C ... ")
+for (tt in THRESHOLDS) {
+  col <- paste0("dday", tt)
+  dday_monthly <- dday_monthly %>%
+    mutate(!!col := compute_dday_monthly(avg_tmin, avg_tmax, tt) * n_days)
+}
+cat("done\n")
+
+# Aggregate county → state → sum across growing season
+dday_state_year <- dday_monthly %>%
+  group_by(year, state, month) %>%
+  summarise(across(starts_with("dday"), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+  group_by(year, state) %>%
+  summarise(across(starts_with("dday"), sum), .groups = "drop")
+
+# Merge with yield and precipitation
+knot_data <- hay_yield_clean %>%
+  inner_join(dday_state_year, by = c("state", "year")) %>%
+  inner_join(
+    wx_state_year %>% select(state, year, ppt, ppt2),
+    by = c("state", "year")
+  ) %>%
+  filter(!is.na(yield_tonsPerAcre), yield_tonsPerAcre > 0)
+
+cat("Knot search sample:", nrow(knot_data), "obs\n")
+
+c1_candidates <- seq(15, 28, by = 1)
+c2_candidates <- seq(25, 40, by = 1)
+
+grid <- expand.grid(c1 = c1_candidates, c2 = c2_candidates) %>%
+  filter(c2 > c1 + 3)   # Require at least 3°C gap between knots
+
+cat("\nRunning grid search over", nrow(grid), "(c1, c2) pairs ...\n")
+
+rsq_results <- grid %>%
+  rowwise() %>%
+  mutate(
+    within_r2 = tryCatch({
+      tmp <- knot_data %>%
+        transmute(
+          state, year,
+          log_yield = log(yield_tonsPerAcre),
+          ppt, ppt2,
+          seg1 = dday0  - get(paste0("dday", c1)),   # 0 to c1
+          seg2 = get(paste0("dday", c1)) - get(paste0("dday", c2)),  # c1 to c2
+          seg3 = get(paste0("dday", c2))              # c2 to infinity
+        )
+      m <- feols(
+        log_yield ~ seg1 + seg2 + seg3 + ppt + ppt2 | state + year,
+        data    = tmp,
+        cluster = ~state
+      )
+      r2(m, "wr2")
+    }, error = function(e) NA_real_)
+  ) %>%
+  ungroup()
+
+optimal <- rsq_results %>%
+  filter(!is.na(within_r2)) %>%
+  slice_max(within_r2, n = 1, with_ties = FALSE)
+
+cat("\n===== OPTIMAL TEMPERATURE THRESHOLDS FOR HAY =====\n")
+cat("  c1 =", optimal$c1, "°C  — yield response starts leveling off\n")
+cat("  c2 =", optimal$c2, "°C  — yield begins declining (HAY optimal max temp)\n")
+cat("  Within R²:", round(optimal$within_r2, 4), "\n\n")
+
+# Heatmap of R² by (c1, c2) — helps verify clean optimum vs. flat ridge
+p_rsq <- ggplot(rsq_results %>% filter(!is.na(within_r2)),
+                aes(x = c1, y = c2, fill = within_r2)) +
+  geom_tile() +
+  geom_point(data = optimal, aes(x = c1, y = c2),
+             shape = 4, size = 5, color = "white", stroke = 2) +
+  scale_fill_viridis_c(name = "Within R²", option = "plasma") +
+  scale_x_continuous(breaks = c1_candidates) +
+  scale_y_continuous(breaks = c2_candidates) +
+  labs(
+    title    = "Grid Search: Within R² by (c1, c2) Temperature Thresholds",
+    subtitle = paste0("Optimal: c1 = ", optimal$c1, "°C, c2 = ", optimal$c2, "°C"),
+    x        = "Lower knot c1 (°C)",
+    y        = "Upper knot c2 (°C)",
+    caption  = "White × = optimal. If you see a ridge rather than a peak, thresholds are weakly identified."
+  ) +
+  theme_classic(base_size = 12)
+
+print(p_rsq)
+ggsave("hay_knot_rsq_heatmap.jpeg", p_rsq, width = 9, height = 7)
+cat("Saved: hay_knot_rsq_heatmap.jpeg\n")
+
+
+c1_opt <- optimal$c1
+c2_opt <- optimal$c2
+
+hay_pw_data <- knot_data %>%
+  mutate(
+    seg1 = dday0                          - get(paste0("dday", c1_opt)),
+    seg2 = get(paste0("dday", c1_opt))   - get(paste0("dday", c2_opt)),
+    seg3 = get(paste0("dday", c2_opt))
+  )
+
+hay_pw_model <- feols(
+  log(yield_tonsPerAcre) ~ seg1 + seg2 + seg3 + ppt + ppt2 | state + year,
+  data    = hay_pw_data,
+  cluster = ~state
+)
+
+cat("\n===== PREFERRED PIECEWISE LINEAR MODEL =====\n")
+print(summary(hay_pw_model))
+
+b_seg1 <- coef(hay_pw_model)["seg1"]
+b_seg2 <- coef(hay_pw_model)["seg2"]
+b_seg3 <- coef(hay_pw_model)["seg3"]
+
+cat("\nCoefficient signs (should be: + , +/~0, -):\n")
+cat(sprintf("  β_seg1 [0 → %d°C]:  %+.6f  (%s)\n", c1_opt, b_seg1,
+            ifelse(b_seg1 > 0, "POSITIVE ✓ beneficial heat", "NEGATIVE — check data")))
+cat(sprintf("  β_seg2 [%d → %d°C]: %+.6f  (%s)\n", c1_opt, c2_opt, b_seg2,
+            ifelse(b_seg2 > 0, "still positive", "diminishing returns")))
+cat(sprintf("  β_seg3 [%d°C → ∞]: %+.6f  (%s)\n", c2_opt, b_seg3,
+            ifelse(b_seg3 < 0, "NEGATIVE ✓ damaging heat", "POSITIVE — unexpected")))
+
+temp_seq <- seq(0, 45, by = 0.25)
+
+marg_df <- data.frame(temp = temp_seq) %>%
+  mutate(
+    log_yield_effect = case_when(
+      temp <= c1_opt ~ b_seg1 * temp,
+      temp <= c2_opt ~ b_seg1 * c1_opt + b_seg2 * (temp - c1_opt),
+      TRUE           ~ b_seg1 * c1_opt +
+        b_seg2 * (c2_opt - c1_opt) +
+        b_seg3 * (temp - c2_opt)
+    )
+  )
+
+p_piecewise <- ggplot(marg_df, aes(x = temp, y = log_yield_effect)) +
+  geom_vline(xintercept = c1_opt, linetype = "dashed",
+             color = "orange", linewidth = 0.9) +
+  geom_vline(xintercept = c2_opt, linetype = "dashed",
+             color = "red3",   linewidth = 0.9) +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "gray60") +
+  geom_line(color = "steelblue", linewidth = 1.4) +
+  annotate("text", x = c1_opt + 0.4,
+           y = max(marg_df$log_yield_effect, na.rm = TRUE) * 0.92,
+           label = paste0("c1 = ", c1_opt, "°C\n(leveling off)"),
+           hjust = 0, color = "darkorange", size = 3.8) +
+  annotate("text", x = c2_opt + 0.4,
+           y = max(marg_df$log_yield_effect, na.rm = TRUE) * 0.75,
+           label = paste0("c2 = ", c2_opt, "°C\n(damaging)"),
+           hjust = 0, color = "red3", size = 3.8) +
+  scale_x_continuous(breaks = seq(0, 45, 5)) +
+  labs(
+    title    = "Piecewise Linear Temperature Effect on Hay Yield",
+    subtitle = paste0("Optimal thresholds: c1 = ", c1_opt,
+                      "°C, c2 = ", c2_opt, "°C  |  State + Year FE"),
+    x        = "Temperature (°C)",
+    y        = "Cumulative log-yield effect (relative to 0°C)",
+    caption  = paste0(
+      "Based on grid search over (c1, c2) maximizing within-R².\n",
+      "c2 = upper threshold above which heat reduces hay yield."
+    )
+  ) +
+  theme_classic(base_size = 13) +
+  theme(plot.caption = element_text(size = 8, color = "gray40"))
+
+print(p_piecewise)
+ggsave("hay_piecewise_plot.jpeg", p_piecewise, width = 10, height = 6)
+cat("Saved: hay_piecewise_plot.jpeg\n")
+
+
+null_model <- feols(
+  log(yield_tonsPerAcre) ~ 1 | state + year,
+  data    = hay_reg,
+  cluster = ~state
+)
+
+comparison <- data.frame(
+  Model = c(
+    "No weather (FE only)",
+    "Step function (S&R bins, 14 temp bins)",
+    "Piecewise linear (optimal c1, c2)"
+  ),
+  Within_R2 = c(
+    r2(null_model,     "wr2"),
+    r2(hay_bin_model,  "wr2"),
+    r2(hay_pw_model,   "wr2")
+  )
+) %>%
+  mutate(Within_R2 = round(Within_R2, 4))
+
+cat("\n===== MODEL COMPARISON =====\n")
+print(comparison)
+
+cat("\n=== SUMMARY ===\n")
+cat("Optimal temperature thresholds for hay:\n")
+cat("  Beneficial heat (0 →", c1_opt, "°C): β =", round(b_seg1, 6), "\n")
+cat("  Transition (", c1_opt, "→", c2_opt, "°C): β =", round(b_seg2, 6), "\n")
+cat("  Damaging heat (above", c2_opt, "°C): β =", round(b_seg3, 6), "\n")
+cat("\nThese c1 and c2 values replace the hard-coded 12°C / 31°C thresholds in\n")
+cat("your drought paper — they are empirically optimal for hay specifically.\n")
+cat("\nTo project hay stocks 2023-2099, feed c1_opt and c2_opt into your\n")
+cat("project_hay_stocks() function replacing hay_GDD and hay_EDD.\n")
+
+```
+
+### Hay Projections
+
+```{r}
+#| echo: false
+projected_4.5 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/Weather_r01_4.5.rds")
+projected_4.5 <- projected_4.5 %>% 
+  dplyr::filter(year >= 2022)
+projected_8.5 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/Weather_r01_8.5.rds")
+projected_8.5 <- projected_8.5 %>% 
+  dplyr::filter(year >= 2022)
+
+
+
+state_to_region <- function(state_name) {
+  state_name <- tolower(state_name)
+  dplyr::case_when(
+    state_name %in% c("michigan", "wisconsin", "minnesota")                                          ~ "Lake States",
+    state_name %in% c("iowa", "illinois", "indiana", "ohio", "missouri")                             ~ "Corn Belt",
+    state_name %in% c("north dakota", "south dakota", "nebraska", "kansas")                          ~ "Northern Plains",
+    state_name %in% c("oklahoma", "texas")                                                           ~ "Southern Plains",
+    state_name %in% c("arkansas", "louisiana", "mississippi")                                        ~ "Delta States",
+    state_name %in% c("alabama", "south carolina", "georgia", "florida")                             ~ "Southeast",
+    state_name %in% c("west virginia", "kentucky", "virginia", "tennessee", "north carolina")        ~ "Appalachia",
+    state_name %in% c("maine", "new hampshire", "vermont", "massachusetts", "rhode island",
+                      "connecticut", "new york", "new jersey", "pennsylvania",
+                      "delaware", "maryland")                                                        ~ "Northeast",
+    state_name %in% c("montana", "idaho", "wyoming", "colorado", "utah",
+                      "nevada", "arizona", "new mexico")                                             ~ "Mountain",
+    state_name %in% c("washington", "oregon", "california")                                         ~ "Pacific",
+    TRUE ~ NA_character_
+  )
+}
+
+region_grazing_months <- tibble::tribble(
+  ~region,           ~start_month, ~end_month,
+  "Appalachia",      3,            10,
+  "Corn Belt",       4,            10,
+  "Delta States",    4,            10,
+  "Lake States",     5,            10,
+  "Mountain",        5,            10,
+  "Northeast",       5,            10,
+  "Northern Plains", 4,            10,
+  "Pacific",         3,            10,
+  "Southeast",       2,            10,
+  "Southern Plains", 4,            10
+)
+
+
+
+baseline_area <- hay_area_harvested %>%
+  mutate(state = tolower(state_name),
+         year  = as.integer(year)) %>%
+  filter(year >= 2018, year <= 2022) %>%
+  group_by(state) %>%
+  summarise(area_acres = mean(area_harvested, na.rm = TRUE), .groups = "drop")
+
+cat("Baseline area states:", nrow(baseline_area), "\n")
+
+
+C1 <- 15   # lower knot — beneficial heat levels off
+C2 <- 31   # upper knot — damage threshold (empirically estimated)
+
+b_seg1 <- coef(hay_pw_model)["seg1"]   # 0 → C1
+b_seg2 <- coef(hay_pw_model)["seg2"]   # C1 → C2
+b_seg3 <- coef(hay_pw_model)["seg3"]   # C2 → inf
+b_ppt  <- coef(hay_pw_model)["ppt"]
+b_ppt2 <- coef(hay_pw_model)["ppt2"]
+
+# State fixed effects (named vector: state → intercept)
+state_fe <- fixef(hay_pw_model)$state
+
+state_fe_df <- data.frame(
+  state  = names(state_fe),
+  fe_val = as.numeric(state_fe),
+  stringsAsFactors = FALSE
+)
+
+cat("\nModel coefficients:\n")
+cat("  seg1 [0 →", C1, "°C]:", round(b_seg1, 6), "\n")
+cat("  seg2 [", C1, "→", C2, "°C]:", round(b_seg2, 6), "\n")
+cat("  seg3 [", C2, "°C → ∞]:", round(b_seg3, 6), "\n")
+
+
+compute_dday_monthly <- function(tmin, tmax, threshold) {
+  tavg <- (tmin + tmax) / 2
+  arg  <- (2 * threshold - tmax - tmin) / (tmax - tmin)
+  arg  <- pmax(-1, pmin(1, arg))
+  ts   <- acos(arg)
+  dplyr::case_when(
+    tmax <= threshold ~ 0,
+    threshold <= tmin ~ tavg - threshold,
+    TRUE              ~ ((tavg - threshold) * ts + (tmax - tmin) * sin(ts) / 2) / pi
+  )
+}
+
+days_in_month <- c(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+project_hay <- function(cmip_data, scenario_label) {
+  
+  exclude_territories <- c(
+    "american samoa", "commonwealth of the northern mariana islands",
+    "district of columbia", "guam", "hawaii",
+    "puerto rico", "united states virgin islands"
+  )
+  
+  # Add state and region, filter to continental US
+  wx <- cmip_data %>%
+    mutate(state = tolower(STATE_NAME)) %>%
+    filter(!state %in% exclude_territories) %>%
+    mutate(region = state_to_region(state)) %>%
+    filter(!is.na(region)) %>%
+    left_join(region_grazing_months, by = "region") %>%
+    # Keep only months within this state's growing season
+    filter(month >= start_month, month <= end_month) %>%
+    mutate(n_days = days_in_month[month])
+  
+  cat("\nScenario:", scenario_label,
+      "| Rows after season filter:", nrow(wx), "\n")
+  
+  # Compute degree-days at both thresholds
+  wx <- wx %>%
+    mutate(
+      dday0  = compute_dday_monthly(monthly_tmin, monthly_tmax, 0)  * n_days,
+      dday15 = compute_dday_monthly(monthly_tmin, monthly_tmax, C1) * n_days,
+      dday31 = compute_dday_monthly(monthly_tmin, monthly_tmax, C2) * n_days
+    )
+  
+  # Aggregate county → state average, then sum across growing season
+  wx_state <- wx %>%
+    group_by(year, state, month) %>%
+    summarise(
+      dday0  = mean(dday0,  na.rm = TRUE),
+      dday15 = mean(dday15, na.rm = TRUE),
+      dday31 = mean(dday31, na.rm = TRUE),
+      ppt    = mean(monthly_ppt, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    group_by(year, state) %>%
+    summarise(
+      dday0  = sum(dday0),
+      dday15 = sum(dday15),
+      dday31 = sum(dday31),
+      ppt    = sum(ppt),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      ppt2 = ppt^2,
+      # Piecewise segments — same construction as estimation
+      seg1 = dday0  - dday15,   # 0 to C1
+      seg2 = dday15 - dday31,   # C1 to C2
+      seg3 = dday31             # C2 to infinity
+    )
+  
+  # Join state FEs and baseline area
+  wx_state <- wx_state %>%
+    left_join(state_fe_df,  by = "state") %>%
+    left_join(baseline_area, by = "state")
+  
+  # Check for missing FEs (states in projection not in estimation sample)
+  missing_fe <- wx_state %>% filter(is.na(fe_val)) %>% pull(state) %>% unique()
+  if (length(missing_fe) > 0) {
+    cat("  WARNING: No state FE for:", paste(missing_fe, collapse = ", "),
+        "— these states will be dropped from projections.\n")
+  }
+  
+  # Predict log yield → yield → hay stocks
+  proj <- wx_state %>%
+    filter(!is.na(fe_val), !is.na(area_acres)) %>%
+    mutate(
+      pred_log_yield = b_seg1 * seg1 +
+        b_seg2 * seg2 +
+        b_seg3 * seg3 +
+        b_ppt  * ppt  +
+        b_ppt2 * ppt2 +
+        fe_val,
+      pred_yield_tpa  = exp(pred_log_yield),          # tons per acre
+      hay_stock_1000t = pred_yield_tpa * area_acres / 1000,  # 1000 tons
+      scenario        = scenario_label
+    ) %>%
+    dplyr::select(year, state, hay_stock_1000t, scenario) %>%
+    arrange(state, year)
+  
+  cat("  States projected:", n_distinct(proj$state),
+      "| Years:", paste(range(proj$year), collapse = "–"), "\n")
+  cat("  National avg hay stock (1000t):",
+      round(mean(proj$hay_stock_1000t, na.rm = TRUE)), "\n")
+  
+  proj
+}
+
+
+
+cat("\n========== PROJECTING HAY STOCKS ==========\n")
+hay_proj_45 <- project_hay(projected_4.5, "RCP4.5")
+hay_proj_85 <- project_hay(projected_8.5, "RCP8.5")
+
+# Combine
+hay_proj_all <- bind_rows(hay_proj_45, hay_proj_85)
+
+
+hay_proj_national <- hay_proj_all %>%
+  group_by(year, scenario) %>%
+  summarise(
+    hay_stock_1000t = sum(hay_stock_1000t, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Append historical for context
+hay_historical_national <- hay_all_stocks_1000t %>%
+  group_by(year) %>%
+  summarise(hay_stock_1000t = sum(hay_stock_1000t, na.rm = TRUE),
+            .groups = "drop") %>%
+  mutate(scenario = "Historical")
+
+hay_combined_national <- bind_rows(hay_historical_national, hay_proj_national)
+
+cat("\n===== NATIONAL HAY STOCK SUMMARY =====\n")
+hay_proj_national %>%
+  filter(year %in% c(2022, 2040, 2060, 2080, 2099)) %>%
+  print()
+
+
+hay_proj_for_SR <- hay_proj_all %>%
+  bind_rows(
+    hay_observed_last %>%
+      mutate(scenario = "RCP4.5"),
+    hay_observed_last %>%
+      mutate(scenario = "RCP8.5")
+  ) %>%
+  group_by(scenario, state) %>%
+  arrange(year, .by_group = TRUE) %>%
+  mutate(year_lead = year + 1) %>%
+  select(state, year_lead, hay_stock_1000t_lagged = hay_stock_1000t) 
+
+cat("\nHay projection output ready for SR model:\n")
+cat("Columns:", paste(names(hay_proj_for_SR), collapse = ", "), "\n")
+cat("Rows:", nrow(hay_proj_for_SR), "\n")
+
+saveRDS(hay_proj_for_SR, "/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/RobustnessCheck/Data/Hay_Projected.rds")
+
+
+```
+

@@ -1,0 +1,1012 @@
+---
+title: "Data Collection"
+date: "`r Sys.Date()`"
+format: html
+execute:
+  echo: true
+---
+
+### ============================================
+
+### Data Collection Script
+
+### This script collects and processes raw data from various sources
+
+### Sources include:
+
+### - 1. Retrieve USDA NASS pastureland data from USDA Census of Agriculture
+
+### - 2. Retrieve USDA NASS cattle inventory data from USDA Census of Agriculture
+
+### - 3. Retrieve hay production data from USDA NASS 
+
+### - 4. Retrieve cattle dressing weights data from USDA NASS
+
+### - 5. Retrieve weather data from PRISM
+
+### - 6. Retrieve Climate projections data 
+
+### - 7.Retrieve USDM data
+
+###  - 8.Retrieve PSDI data
+
+
+### =============================================
+
+```{r}
+# Load packages
+pacman::p_load(
+  stars,        # spatiotemporal data handling
+  terra,        # raster data handling
+  sf,           # vector data handling
+  dplyr,        # data wrangling
+  tidyverse,
+  fixest,
+  usdarnass,
+  flextable,
+  tigris,
+  zoo,
+  purrr,
+  ncdf4,
+  stringr,      # string manipulation
+  lubridate,    # date handling
+  data.table,   # fast data wrangling
+  tidyr,        # reshape
+  keyring,      # API key management
+  ggplot2,
+  tmap,
+  future.apply, # parallel processing
+  prism,        # download PRISM data
+  exactextractr,
+  tidycensus,
+  readxl,
+  readr,
+  patchwork
+)
+rm(list = ls())
+
+```
+
+### 1. Retrieve USDA NASS pastureland data from USDA Census of Agriculture
+
+```{r}
+#| echo: false
+
+clean_numeric <- function(x) suppressWarnings(readr::parse_number(as.character(x)))
+pasture_after1997 <- readxl::read_xlsx("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/pasture_data_after1997.xlsx") %>%
+  dplyr::select(State, County, Year, Value) %>%
+  rename(state = State, county = County, year = Year, pastureland_all_types = Value) %>%
+  mutate(across(c(year, pastureland_all_types), clean_numeric),  # <-- this was missing
+         state  = tolower(state),
+         county = tolower(county))
+
+# County pastureland (pre-1997, hand-digitized from PDFs)
+pasture_before1997 <- readxl::read_xlsx("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/pasture_data_before1997.xlsx") %>%
+  mutate(across(c(year, pastureland_all_types), clean_numeric),
+         state  = tolower(state),
+         county = tolower(county))
+
+# Combine
+pasture_data_ALL <- bind_rows(pasture_before1997, pasture_after1997)
+
+
+```
+
+### 2. Retrieve USDA NASS cattle inventory data from USDA Census of Agriculture
+
+```{r}
+
+# National inventory (post-1997)
+clean_numeric <- function(x) suppressWarnings(readr::parse_number(as.character(x)))
+beef_inv_national <- readxl::read_xlsx("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/county_beef_after1997_National.xlsx") %>%
+  dplyr::select(Year, Value) %>%
+  rename(year = Year, beef_inv = Value) %>%
+  mutate(across(everything(), clean_numeric))
+
+# County inventory (post-1997)
+beef_inv_after1997 <- readxl::read_xlsx("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/county_beefinv_after1997.xlsx") %>%
+  dplyr::select(State, County, Year, Value) %>%
+  rename(state = State, county = County, year = Year, beef_inv = Value) %>%
+  mutate(across(c(year, beef_inv), clean_numeric),
+         state  = tolower(state),
+         county = tolower(county))
+
+# County inventory (pre-1997, hand-digitized from PDFs)
+beef_inv_before1997 <- readxl::read_xlsx("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/county_beefinv_before1997.xlsx") %>%
+  mutate(across(c(year, beef_inv), clean_numeric),
+         state  = tolower(state),
+         county = tolower(county))
+
+# Combine
+beef_inv <- bind_rows(beef_inv_before1997, beef_inv_after1997)
+
+```
+
+### 3. Retrieve hay production data from USDA NASS 
+
+```{r}
+
+# State abbreviation to full name lookup
+state_names <- c(
+  AL = "Alabama",       AK = "Alaska",        AZ = "Arizona",       AR = "Arkansas",
+  CA = "California",    CO = "Colorado",       CT = "Connecticut",   DE = "Delaware",
+  FL = "Florida",       GA = "Georgia",        HI = "Hawaii",        ID = "Idaho",
+  IL = "Illinois",      IN = "Indiana",        IA = "Iowa",          KS = "Kansas",
+  KY = "Kentucky",      LA = "Louisiana",      ME = "Maine",         MD = "Maryland",
+  MA = "Massachusetts", MI = "Michigan",       MN = "Minnesota",     MS = "Mississippi",
+  MO = "Missouri",      MT = "Montana",        NE = "Nebraska",      NV = "Nevada",
+  NH = "New Hampshire", NJ = "New Jersey",     NM = "New Mexico",    NY = "New York",
+  NC = "North Carolina",ND = "North Dakota",   OH = "Ohio",          OK = "Oklahoma",
+  OR = "Oregon",        PA = "Pennsylvania",   RI = "Rhode Island",  SC = "South Carolina",
+  SD = "South Dakota",  TN = "Tennessee",      TX = "Texas",         UT = "Utah",
+  VT = "Vermont",       VA = "Virginia",       WA = "Washington",    WV = "West Virginia",
+  WI = "Wisconsin",     WY = "Wyoming"
+)
+
+# State-level hay stocks (1,000 tons)
+hay_all_stocks_1000t <- readxl::read_xlsx(
+  "/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/RobustnessCheck/Data/StateHaySupplies.xlsx",
+  sheet = 2, skip = 2
+) %>%
+  pivot_longer(cols = -year, names_to = "state", values_to = "hay_stock_1000t") %>%
+  mutate(state = tolower(state_names[state])) %>%
+  group_by(state) %>%
+  mutate(
+    # Pre-1986: reported as of Jan 1 → lead by 1 year to align with Dec 1 convention
+    # Post-1986: reported as of Dec 1 → already beginning-of-year inventory, no shift needed
+    hay_stock_1000t = ifelse(year < 1986, dplyr::lead(hay_stock_1000t, n = 1), hay_stock_1000t)
+  ) %>%
+  ungroup()
+
+# National average hay stocks by year
+hay_all_stocks_1000t_national <- hay_all_stocks_1000t %>%
+  group_by(year) %>%
+  summarize(hay_stock_1000t = mean(hay_stock_1000t, na.rm = TRUE))
+
+# HAY STOCKS average for neighbouring states                           
+neighbors_raw <- tribble(
+  ~state_name, ~state, ~nbr_name, ~nbr,
+  "Alabama","AL","Florida","FL",
+  "Alabama","AL","Georgia","GA",
+  "Alabama","AL","Mississippi","MS",
+  "Alabama","AL","Tennessee","TN",
+  "Alaska","AK","","",
+  "Arizona","AZ","California","CA",
+  "Arizona","AZ","Colorado","CO",
+  "Arizona","AZ","Nevada","NV",
+  "Arizona","AZ","New Mexico","NM",
+  "Arizona","AZ","Utah","UT",
+  "Arkansas","AR","Louisiana","LA",
+'Arkansas','AR','Mississippi','MS',
+'Arkansas','AR','Missouri','MO',
+'Arkansas','AR','Oklahoma','OK',
+'Arkansas','AR','Tennessee','TN',
+'Arkansas','AR','Texas','TX',
+'California','CA','Arizona','AZ',
+'California','CA','Nevada','NV',
+'California','CA','Oregon','OR',
+'Colorado','CO','Arizona','AZ',
+'Colorado','CO','Kansas','KS',
+'Colorado','CO','Nebraska','NE',
+'Colorado','CO','New Mexico','NM',
+'Colorado','CO','Oklahoma','OK',
+'Colorado','CO','Utah','UT',
+'Colorado','CO','Wyoming','WY',
+'Connecticut','CT','Massachusetts','MA',
+'Connecticut','CT','New York','NY',
+'Connecticut','CT','Rhode Island','RI',
+'Delaware','DE','Maryland','MD',
+'Delaware','DE','New Jersey','NJ',
+'Delaware','DE','Pennsylvania','PA',
+'Florida','FL','Alabama','AL',
+'Florida','FL','Georgia','GA',
+'Georgia','GA','Alabama','AL',
+'Georgia','GA','Florida','FL',
+'Georgia','GA','North Carolina','NC',
+'Georgia','GA','South Carolina','SC',
+'Georgia','GA','Tennessee','TN',
+'Hawaii','HI','','',
+'Idaho','ID','Montana','MT',
+'Idaho','ID','Nevada','NV',
+'Idaho','ID','Oregon','OR',
+'Idaho','ID','Utah','UT',
+'Idaho','ID','Washington','WA',
+'Idaho','ID','Wyoming','WY',
+'Illinois','IL','Indiana','IN',
+'Illinois','IL','Iowa','IA',
+'Illinois','IL','Michigan','MI',
+'Illinois','IL','Kentucky','KY',
+'Illinois','IL','Missouri','MO',
+'Illinois','IL','Wisconsin','WI',
+'Indiana','IN','Illinois','IL',
+'Indiana','IN','Kentucky','KY',
+'Indiana','IN','Michigan','MI',
+'Indiana','IN','Ohio','OH',
+'Iowa','IA','Illinois','IL',
+'Iowa','IA','Minnesota','MN',
+'Iowa','IA','Missouri','MO',
+'Iowa','IA','Nebraska','NE',
+'Iowa','IA','South Dakota','SD',
+'Iowa','IA','Wisconsin','WI',
+'Kansas','KS','Colorado','Co',
+'Kansas','KS','Missouri','MO',
+'Kansas','KS','Nebraska','NE',
+'Kansas','KS','Oklahoma','OK',
+'Kentucky','KY','Illinois','IL',
+'Kentucky','KY','Indiana','IN',
+'Kentucky','KY','Missouri','MO',
+'Kentucky','KY','Ohio','OH',
+'Kentucky','KY','Tennessee','TN',
+'Kentucky','KY','Virginia','VA',
+'Kentucky','KY','West Virginia','WV',
+'Louisiana','LA','Arkansas','AR',
+'Louisiana','LA','Mississippi','MS',
+'Louisiana','LA','Texas','TX',
+'Maine','ME','New Hampshire','NH',
+'Maryland','MD','Delaware','DE',
+'Maryland','MD','Pennsylvania','PA',
+'Maryland','MD','Virginia','VA',
+'Maryland','MD','West Virginia','WV',
+'Massachusetts','MA','Connecticut','CT',
+'Massachusetts','MA','New Hampshire','NH',
+'Massachusetts','MA','New York','NY',
+'Massachusetts','MA','Rhode Island','RI',
+'Massachusetts','MA','Vermont','VT',
+'Michigan','MI','Illinois','IL',
+'Michigan','MI','Indiana','IN',
+'Michigan','MI','Minnesota','MN',
+'Michigan','MI','Ohio','OH',
+'Michigan','MI','Wisconsin','WI',
+'Minnesota','MN','Iowa','IA',
+'Minnesota','MN','Michigan','MI',
+'Minnesota','MN','North Dakota','ND',
+'Minnesota','MN','South Dakota','SD',
+'Minnesota','MN','Wisconsin','WI',
+'Mississippi','MS','Alabama','AL',
+'Mississippi','MS','Arkansas','AR',
+'Mississippi','MS','Louisiana','LA',
+'Mississippi','MS','Tennessee','TN',
+'Missouri','MO','Arkansas','AR',
+'Missouri','MO','Illinois','IL',
+'Missouri','MO','Iowa','IA',
+'Missouri','MO','Kansas','KS',
+'Missouri','MO','Kentucky','KY',
+'Missouri','MO','Nebraska','NE',
+'Missouri','MO','Oklahoma','OK',
+'Missouri','MO','Tennessee','TN',
+'Montana','MT','Idaho','ID',
+'Montana','MT','North Dakota','ND',
+'Montana','MT','South Dakota','SD',
+'Montana','MT','Wyoming','WY',
+'Nebraska','NE','Colorado','CO',
+'Nebraska','NE','Iowa','IA',
+'Nebraska','NE','Kansas','KS',
+'Nebraska','NE','Missouri','MO',
+'Nebraska','NE','South Dakota','SD',
+'Nebraska','NE','Wyoming','WY',
+'Nevada','NV','Arizona','AZ',
+'Nevada','NV','California','CA',
+'Nevada','NV','Idaho','ID',
+'Nevada','NV','Oregon','OR',
+'Nevada','NV','Utah','UT',
+'New Hampshire','NH','Maine','ME',
+'New Hampshire','NH','Massachusetts','MA',
+'New Hampshire','NH','Vermont','VT',
+'New Jersey','NJ','Delaware','DE',
+'New Jersey','NJ','New York','NY',
+'New Jersey','NJ','Pennsylvania','PA',
+'New Mexico','NM','Arizona','AZ',
+'New Mexico','NM','Colorado','CO',
+'New Mexico','NM','Oklahoma','OK',
+'New Mexico','NM','Texas','TX',
+'New Mexico','NM','Utah','UT',
+'New York','NY','Connecticut','CT',
+'New York','NY','Massachusetts','MA',
+'New York','NY','New Jersey','NJ',
+'New York','NY','Pennsylvania','PA',
+'New York','NY','Rhode Island','RI',
+'New York','NY','Vermont','VT',
+'North Carolina','NC','Georgia','GA',
+'North Carolina','NC','South Carolina','SC',
+'North Carolina','NC','Tennessee','TN',
+'North Carolina','NC','Virginia','VA',
+'North Dakota','ND','Minnesota','MN',
+'North Dakota','ND','Montana','MT',
+'North Dakota','ND','South Dakota','SD',
+'Ohio','OH','Indiana','IN',
+'Ohio','OH','Kentucky','KY',
+'Ohio','OH','Michigan','MI',
+'Ohio','OH','Pennsylvania','PA',
+'Ohio','OH','West Virginia','WV',
+'Oklahoma','OK','Arkansas','AR',
+'Oklahoma','OK','Colorado','CO',
+'Oklahoma','OK','Kansas','KS',
+'Oklahoma','OK','Missouri','MO',
+'Oklahoma','OK','New Mexico','NM',
+'Oklahoma','OK','Texas','TX', 
+'Oregon','OR','California','CA',
+'Oregon','OR','Idaho','ID',
+'Oregon','OR','Nevada','NV',
+'Oregon','OR','Washington','WA',
+'Pennsylvania','PA','Delaware','DE',
+'Pennsylvania','PA','Maryland','MD',
+'Pennsylvania','PA','New Jersey','NJ',
+'Pennsylvania','PA','New York','NY',
+'Pennsylvania','PA','Ohio','OH',
+'Pennsylvania','PA','West Virginia','WV',
+'Rhode Island','RI','Connecticut','CT',
+'Rhode Island','RI','Massachusetts','MA',
+'Rhode Island','RI','New York','NY',
+'South Carolina','SC','Georgia','GA',
+'South Carolina','SC','North Carolina','NC',
+'South Dakota','SD','Iowa','IA',
+'South Dakota','SD','Minnesota','MN',
+'South Dakota','SD','Montana','MT',
+'South Dakota','SD','Nebraska','NE',
+'South Dakota','SD','North Dakota','ND',
+'South Dakota','SD','Wyoming','WY',
+'Tennessee','TN','Alabama','AL',
+'Tennessee','TN','Arkansas','AR',
+'Tennessee','TN','Georgia','GA',
+'Tennessee','TN','Kentucky','KY',
+'Tennessee','TN','Mississippi','MS',
+'Tennessee','TN','Missouri','MO',
+'Tennessee','TN','North Carolina','NC',
+'Tennessee','TN','Virginia','VA',
+'Texas','TX','Arkansas','AR',
+'Texas','TX','Louisiana','LA',
+'Texas','TX','New Mexico','NM',
+'Texas','TX','Oklahoma','OK',
+'Utah','UT','Arizona','AZ',
+'Utah','UT','Colorado','CO',
+'Utah','UT','Idaho','ID',
+'Utah','UT','Nevada','NV',
+'Utah','UT','New Mexico','NM',
+'Utah','UT','Wyoming','WY',
+'Vermont','VT','Massachusetts','MA',
+'Vermont','VT','New Hampshire','NH',
+'Vermont','VT','New York','NY',
+'Virginia','VA','Kentucky','KY',
+'Virginia','VA','Maryland','MD',
+'Virginia','VA','North Carolina','NC',
+'Virginia','VA','Tennessee','TN',
+'Virginia','VA','West Virginia','WV',
+'Washington','WA','Idaho','ID',
+'Washington','WA','Oregon','OR',
+'West Virginia','WV','Kentucky','KY',
+'West Virginia','WV','Maryland','MD',
+'West Virginia','WV','Ohio','OH',
+'West Virginia','WV','Pennsylvania','PA',
+'West Virginia','WV','Virginia','VA',
+'Wisconsin','WI','Illinois','IL',
+'Wisconsin','WI','Iowa','IA',
+'Wisconsin','WI','Michigan','MI',
+'Wisconsin','WI','Minnesota','MN',
+'Wyoming','WY','Colorado','CO',
+'Wyoming','WY','Idaho','ID',
+'Wyoming','WY','Montana','MT',
+'Wyoming','WY','Nebraska','NE',
+'Wyoming','WY','South Dakota','SD',
+'Wyoming','WY','Utah','UT'
+)
+
+neighbors_fullnames <- neighbors_raw %>%
+  mutate(
+    state = toupper(state),
+    nbr   = toupper(nbr)
+  ) %>%
+  filter(nbr != "", !is.na(nbr)) %>%
+  distinct(state, nbr) %>%
+  group_by(state) %>%
+  summarise(
+    neighbour = paste(sort(unique(state_names[nbr])), collapse = ", "),
+    .groups = "drop"
+  ) %>%
+  mutate(state = state_names[state]) %>%
+  arrange(state)
+
+
+neighbors_fullnames$state <- tolower(neighbors_fullnames$state)
+neighbors_fullnames$neighbour <- tolower(neighbors_fullnames$neighbour)
+
+neighbors_long <- neighbors_fullnames %>%
+  mutate(
+    state = tolower(state),
+    neighbour = tolower(neighbour)
+  ) %>%
+  separate_rows(neighbour, sep = ",\\s*") %>%
+  rename(neighbor_state = neighbour)
+neighbors_long
+
+```
+
+### 4. Retrieve cattle dressing weights data from USDA NASS
+
+```{r}
+
+# Dressed carcass weights are converted to live weights using a 55% dressing percentage
+dressing_pct <- 0.55
+
+cattle_weight <- suppressMessages(
+  readxl::read_xlsx(
+    "/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/Data/Data/catsltr.xlsx",
+    sheet = 2, skip = 3
+  )
+) %>%
+  dplyr::select(1, 21) %>%                        # col 21 = cow dressed weight
+  setNames(c("date", "dressed_wt")) %>%
+  mutate(
+    live_wt = dressed_wt / dressing_pct,
+    year    = year(date),
+    month   = month(date)
+  ) %>%
+  group_by(year) %>%
+  summarize(mean_live_wt = mean(live_wt, na.rm = TRUE))
+  
+```
+
+### 5. Retrieve weather data from PRISM
+
+```{r}
+
+# Download daily/monthly data from PRISM 
+# num_cores <- detectCores()
+# plan(multisession, workers = num_cores)
+# #--- define a function to download and save PRISM data stacked by month ---#
+# get_save_prism <- function(i, var_type) {
+#
+#   #++++++++++++++++++++++++++++++++++++
+#   #+ Debug
+#   #++++++++++++++++++++++++++++++++++++
+#   # i <- 1
+#   # var_type <- "tmax"
+#
+#   #++++++++++++++++++++++++++++++++++++
+#   #+ Main
+#   #++++++++++++++++++++++++++++++++++++
+#   print(paste0("working on ", i))
+#
+#   temp_month <- month_year_data[i, month] # working month
+#   temp_year <- month_year_data[i, year] # working year
+#
+#   options(prism.path = "/Volumes/Extreme SSD/UNL/DWFI/Drought/data/PRISM2022/")
+#
+#   #--- starting date of the working month-year ---#
+#   start_date <- dmy(paste0("1/", temp_month, "/", temp_year))
+#   #--- end date ---#
+#   end_date <- start_date %m+% months(1) - 1
+#
+#   #--- download daily PRISM data for the working month-year ---#
+#   get_prism_dailys(
+#     type = var_type,
+#     minDate = as.character(start_date),
+#     maxDate = as.character(end_date),
+#     keepZip = FALSE
+#   )
+#
+#   #--- list of dates of the working month-year ---#
+#   dates_ls <- seq(start_date, end_date, "days")
+#
+#   #--- remove dashes ---#
+#   dates_prism_txt <- str_remove_all(dates_ls, "-")
+#
+#   #--- folder names ---#
+#   folder_name <- paste0("PRISM_", var_type, "_stable_4kmD2_", dates_prism_txt, "_bil")
+#   #--- the file name of the downloaded data ---#
+#   file_name <- paste0("PRISM_", var_type, "_stable_4kmD2_", dates_prism_txt, "_bil.bil")
+#   #--- complete path to the downloaded files ---#
+#   file_path <- paste0("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/PRISM2022/", folder_name, "/", file_name)
+#
+#   #--- combine all the PRISM files as a RasterStack ---#
+#   temp_stars <-
+#     stack(file_path) %>%
+#     #--- convert to stars ---#
+#     st_as_stars() %>%
+#     #--- set the third dimension as data ---#
+#     st_set_dimensions("band", values = dates_ls, name = "date")
+#
+#
+#   #--- save the stars as an rds file ---#
+#   saveRDS(
+#     temp_stars,
+#     paste0("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/PRISM2022/PRISM_", var_type, "_y", temp_year, "_m", temp_month, ".rds")
+#   )
+#
+# }
+#
+# month_year_data <- data.table::CJ(month = 1:12, year = c(2021, 2022))
+#
+#
+# ## tmax, tmin, ppt, tmean
+# future_lapply(
+#   1:nrow(month_year_data),
+#   function(x) get_save_prism(x, "tmin")
+# )
+
+
+# # Combine data from PRISM
+# US_counties <- tigris::counties(state = "US", cb = TRUE) %>%
+#   st_as_sf()
+# 
+# # 1981:1991; 1992:2002; 2003:2012; 2013:2020, 2021:2022
+# month_year_data <- CJ(month = 1:12, year = 1981:2022)
+# US_counties_data <- data.table()
+# 
+# temp_base <- 15  # base temperature for GDD calculation
+# temp_up <- 31  # threshold temperature for EDD calculation
+# 
+# get_saved_PRISM_DT <- function(i, month_year_data, US_counties) {
+#   # i = 1
+#   temp_year <- month_year_data[i, year]
+#   temp_month <- month_year_data[i, month]
+# 
+#   file_path_ppt <- sprintf("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/PRISM_MONTHLY/PRISM_ppt_y%d_m%d.rds", temp_year, temp_month)
+#   file_path_tmean <- sprintf("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/PRISM_MONTHLY/PRISM_tmean_y%d_m%d.rds", temp_year, temp_month)
+#   file_path_tmax <- sprintf("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/PRISM_MONTHLY/PRISM_tmax_y%d_m%d.rds", temp_year, temp_month)
+#   file_path_tmin <- sprintf("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/PRISM_MONTHLY/PRISM_tmin_y%d_m%d.rds", temp_year, temp_month)
+# 
+#   cat("Year", temp_year, ", month", temp_month, "\n")
+# 
+#   saved_ppt <- readRDS(file_path_ppt)
+#   saved_tmean <- readRDS(file_path_tmean)
+#   saved_tmax <- readRDS(file_path_tmax)
+#   saved_tmin <- readRDS(file_path_tmin)
+# 
+#   US_counties_sf <- st_transform(US_counties, st_crs(saved_ppt))
+# 
+#   a_ppt <- as.data.table(terra::extract(as(saved_ppt, "SpatRaster"), vect(US_counties_sf)))
+#   a_tmean <- as.data.table(terra::extract(as(saved_tmean, "SpatRaster"), vect(US_counties_sf)))
+#   a_tmax <- as.data.table(terra::extract(as(saved_tmax, "SpatRaster"), vect(US_counties_sf)))
+#   a_tmin <- as.data.table(terra::extract(as(saved_tmin, "SpatRaster"), vect(US_counties_sf)))
+# 
+#   a_ppt_long <- melt(a_ppt, id.vars = "ID", variable.name = "Date", value.name = "ppt") %>%
+#     .[, .(ppt = mean(ppt, na.rm = TRUE)), by = .(ID, Date)]
+# 
+#   # a_ppt_long <- melt(setDT(a_ppt), id.vars = "ID", variable.name = "Date", value.name = "ppt")[,
+#   #      .(ppt = mean(ppt, na.rm = TRUE)), by = .(ID, Date)]
+# 
+#   a_tmean_long <- melt(a_tmean, id.vars = "ID", variable.name = "Date", value.name = "tmean") %>%
+#     .[, .(tmean = mean(tmean, na.rm = TRUE)), by = .(ID, Date)]
+#   a_tmax_long <- melt(a_tmax, id.vars = "ID", variable.name = "Date", value.name = "tmax") %>%
+#     .[, .(tmax = mean(tmax, na.rm = TRUE)), by = .(ID, Date)]
+#   a_tmin_long <- melt(a_tmin, id.vars = "ID", variable.name = "Date", value.name = "tmin") %>%
+#     .[, .(tmin = mean(tmin, na.rm = TRUE)), by = .(ID, Date)]
+# 
+#   setkey(a_ppt_long, ID, Date)
+#   setkey(a_tmean_long, ID, Date)
+#   setkey(a_tmax_long, ID, Date)
+#   setkey(a_tmin_long, ID, Date)
+# 
+#   # Joining the data.tableshe
+#   a_long <- merge(a_ppt_long, a_tmean_long, by = c("ID", "Date"), all = TRUE)
+#   a_long <- merge(a_long, a_tmax_long, by = c("ID", "Date"), all = TRUE)
+#   a_long <- merge(a_long, a_tmin_long, by = c("ID", "Date"), all = TRUE)
+# 
+#   a_long[, Date := as.Date(paste0(gsub("date", "", Date), "01"), format = "%Y%m%d")]
+#   a_long[, `:=`(month = month(Date), year = year(Date), day = day(Date))]
+# 
+#   US_counties_v_1 <- st_as_sf(vect(US_counties_sf)) %>%
+#     mutate(ID = seq_len(nrow(.))) %>%
+#     as.data.table()
+# 
+#   US_counties_v_1 <- merge(US_counties_v_1, a_long, by = "ID", all.x = TRUE)
+#   US_counties_v_2 <- US_counties_v_1[, .(
+#     tmin = mean(tmin, na.rm = TRUE),
+#     tmax = mean(tmax, na.rm = TRUE),
+#     tmean = mean(tmean, na.rm = TRUE),
+#     ppt = sum(ppt, na.rm = TRUE)
+#   ), by = .(year, month, NAME, STATE_NAME)]
+# 
+#   US_counties_v_2[, month_heat_index := (tmean / 5) ^ 1.514]
+# 
+#   US_counties_v_3 <- US_counties_v_2[, .(annual_heat_index = sum(month_heat_index, na.rm = TRUE)), by = .(year, NAME, STATE_NAME)]
+#   US_counties_v_3[, a := 675 * 10^(-9) * annual_heat_index^3 - 771 * 10^(-7) * annual_heat_index^2 + 1792 * 10^(-5) * annual_heat_index + 0.49239]
+# 
+#   joined_weather_SPEI <- merge(US_counties_v_2, US_counties_v_3, by = c("year", "NAME", "STATE_NAME"), all.x = TRUE)
+#   joined_weather_SPEI[, PET := ifelse(tmean <= 0, 0, 16 * ((10 * tmean) / annual_heat_index) ^ a)]
+#   joined_weather_SPEI[, D := ppt - PET]
+# 
+# 
+#   # Estimate GDD and EDD
+#   US_counties_v_1[, Tavg := (tmax + tmin) / 2]
+#   US_counties_v_1[, GDD := fifelse(Tavg < temp_base, 0,
+#                                        fifelse(Tavg > temp_up, temp_up - temp_base,
+#                                                Tavg - temp_base))]
+# 
+#   US_counties_v_1[, EDD := fifelse(tmax > temp_up, tmax - temp_up, 0)]
+# 
+#   US_counties_v_EDD_GDD <- US_counties_v_1[, .(
+#     monthly_GDD = sum(GDD, na.rm = TRUE),
+#     monthly_EDD = sum(EDD, na.rm = TRUE)
+#   ), by = .(year, month, NAME, STATE_NAME)]
+# 
+# 
+#   joined_weather <- merge(joined_weather_SPEI, US_counties_v_EDD_GDD,  by = c("year", "NAME", "STATE_NAME", "month"))
+#   joined_weather <- joined_weather[, .(
+#     avg_tmin = tmin,
+#     avg_tmax = tmax,
+#     avg_tmean = tmean,
+#     sum_ppt = ppt,
+#     monthly_GDD = monthly_GDD,
+#     monthly_EDD = monthly_EDD,
+#     monthly_D = sum(D, na.rm = TRUE)
+#   ), by = .(year, month, NAME, STATE_NAME)]
+# 
+#   return(joined_weather)
+# }
+# 
+# merged_data <- data.frame()
+# merged_data <- lapply(
+#   1:nrow(month_year_data),
+#   function(x) get_saved_PRISM_DT(x, month_year_data, US_counties)
+# )
+# 
+# combined <- do.call(rbind, merged_data)
+# 
+# saveRDS(
+#   combined,
+#   paste0("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Combined_NEW_GDD_EDD/", "15_combined_1981:2022.rds")
+# )
+
+
+
+# Region lookup
+state_to_region <- function(state_name) {
+  state_name <- tolower(state_name)
+  dplyr::case_when(
+    state_name %in% c("michigan", "wisconsin", "minnesota")                                                                              ~ "Lake States",
+    state_name %in% c("iowa", "illinois", "indiana", "ohio", "missouri")                                                                 ~ "Corn Belt",
+    state_name %in% c("north dakota", "south dakota", "nebraska", "kansas")                                                              ~ "Northern Plains",
+    state_name %in% c("oklahoma", "texas")                                                                                               ~ "Southern Plains",
+    state_name %in% c("arkansas", "louisiana", "mississippi")                                                                            ~ "Delta States",
+    state_name %in% c("alabama", "south carolina", "georgia", "florida")                                                                 ~ "Southeast",
+    state_name %in% c("west virginia", "kentucky", "virginia", "tennessee", "north carolina")                                            ~ "Appalachia",
+    state_name %in% c("maine", "new hampshire", "vermont", "massachusetts", "rhode island",
+                       "connecticut", "new york", "new jersey", "pennsylvania", "delaware", "maryland") ~ "Northeast",
+    state_name %in% c("montana", "idaho", "wyoming", "colorado", "utah", "nevada", "arizona", "new mexico")                             ~ "Mountain",
+    state_name %in% c("washington", "oregon", "california")                                                                              ~ "Pacific",
+    TRUE ~ NA_character_
+  )
+}
+
+# Region-specific grazing season start and end months (see Table 1 in manuscript)
+region_grazing_months <- tibble::tribble(
+  ~region,            ~start_month, ~end_month,
+  "Appalachia",                  3,         10,
+  "Corn Belt",                   4,         10,
+  "Delta States",                4,         10,
+  "Lake States",                 5,         10,
+  "Mountain",                    5,         10,
+  "Northeast",                   5,         10,
+  "Northern Plains",             4,         10,
+  "Pacific",                     3,         10,
+  "Southeast",                   2,         10,
+  "Southern Plains",             4,         10
+)
+
+# Helper: load pre-processed PRISM data, filter to grazing season, aggregate to annual
+process_drought_data <- function(filepath) {
+  readRDS(filepath) %>%
+    mutate(
+      monthly_D  = -monthly_D,                      # sign correction: D = PET - P
+      STATE_NAME = tolower(STATE_NAME),
+      NAME       = tolower(NAME),
+      region     = state_to_region(STATE_NAME)
+    ) %>%
+    left_join(region_grazing_months, by = "region") %>%
+    dplyr::filter(month >= start_month & month <= end_month) %>%  # grazing season only
+    group_by(year, STATE_NAME, NAME) %>%
+    summarize(
+      total_D   = sum(monthly_D,   na.rm = TRUE),
+      total_GDD = sum(monthly_GDD, na.rm = TRUE),
+      total_EDD = sum(monthly_EDD, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    rename(state = STATE_NAME, county = NAME) %>%
+    dplyr::select(year, state, county, total_D, total_GDD, total_EDD)
+}
+
+# Process and combine both periods
+drought_final <- bind_rows(
+  process_drought_data("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/RobustnessCheck/Data/combined_1981_2020_NEW.rds"),
+  process_drought_data("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/GitHub/RobustnessCheck/Data/combined_2021_2022_NEW.rds")
+)
+
+
+```
+
+
+### 6. Retrieve Climate projections data 
+
+```{r}
+
+# 1. Functino to estimate weather variables:
+US_counties_sf <- tigris::counties(cb = TRUE) %>%
+  st_as_sf() %>%
+  st_transform("EPSG:4326")
+
+process_cmip6_data <- function(tmax_file, tmin_file, pr_file, scenario, temp_base = 12, temp_up = 31) {
+
+  # Rotate to ensure correct alignment
+  pr_raster <- terra::rotate(pr_file)
+  tmin_raster <- terra::rotate(tmin_file)
+  tmax_raster <- terra::rotate(tmax_file)
+  
+  # Set CRS to WGS84 explicitly
+  crs(pr_raster) <- "EPSG:4326"
+  crs(tmin_raster) <- "EPSG:4326"
+  crs(tmax_raster) <- "EPSG:4326"
+  
+  # Assign time-based names to layers
+  names(pr_raster) <- time(pr_raster)
+  names(tmin_raster) <- time(tmin_raster)
+  names(tmax_raster) <- time(tmax_raster)
+  
+  # Extract data
+  pr_data <- as.data.table(terra::extract(pr_raster, vect(US_counties_sf)))
+  tmin_data <- as.data.table(terra::extract(tmin_raster, vect(US_counties_sf)))
+  tmax_data <- as.data.table(terra::extract(tmax_raster, vect(US_counties_sf)))
+  
+  # Reshape and aggregate data
+  pr_data_ID <- data.table::melt(as.data.table(pr_data),
+                                id.vars = "ID",
+                                variable.name = "Date",
+                                value.name = "ppt"
+                                )[, .(ppt = mean(ppt, na.rm = TRUE)), by = .(ID, Date)]
+  pr_data_ID[, Date_parsed := as.Date(as.character(Date))]
+  pr_data_ID[, days_in_month := lubridate::days_in_month(Date_parsed)]
+  pr_data_ID[, ppt := ppt * 86400 * days_in_month]
+  pr_data_ID[, c("Date_parsed", "days_in_month") := NULL]
+  
+  
+  tmin_data_ID <- data.table::melt(as.data.table(tmin_data),
+                                  id.vars = "ID",
+                                  variable.name = "Date",
+                                  value.name = "tmin"
+                                  )[, .(tmin = mean(tmin, na.rm = TRUE)), by = .(ID, Date)]
+
+  tmax_data_ID <- data.table::melt(as.data.table(tmax_data),
+                                    id.vars = "ID",
+                                    variable.name = "Date",
+                                    value.name = "tmax"
+                                    )[, .(tmax = mean(tmax, na.rm = TRUE)), by = .(ID, Date)]
+  
+  setkey(pr_data_ID,   ID, Date)
+  setkey(tmin_data_ID, ID, Date)
+  setkey(tmax_data_ID, ID, Date)
+  
+  weather_data <- merge(pr_data_ID, tmin_data_ID, by = c("ID", "Date"))
+  weather_data <- merge(weather_data, tmax_data_ID, by = c("ID", "Date"))
+  
+  cat("\nDone Phase 1")
+  
+  # Add year and month columns
+  weather_data[, year := year(Date)]
+  weather_data[, month := month(Date)]
+  
+  US_counties_v_1 <- st_as_sf(vect(US_counties_sf)) %>%
+    mutate(ID = seq_len(nrow(.))) %>%
+    as.data.table()
+  
+  US_counties_v_1 <- merge(US_counties_v_1, weather_data, by = "ID", all.x = TRUE)
+  
+  US_counties_v_1[, tmax := tmax - 273.15]
+  US_counties_v_1[, tmin := tmin - 273.15]
+  
+  US_counties_v_1[, Tavg := (tmax + tmin) / 2]
+    
+  US_counties_v_1[, monthly_heat_index := fifelse(Tavg <= 0, 0, (Tavg / 5) ^ 1.514)]
+  
+  US_counties_annual <- US_counties_v_1[, .(
+    annual_heat_index = sum(monthly_heat_index, na.rm = TRUE)
+  ), by = .(year, NAME, STATE_NAME)]
+  
+  cat("\nDone Phase 2")
+   
+  US_counties_v_2 <-  merge(US_counties_v_1, US_counties_annual, by = c("year", "NAME", "STATE_NAME"), all.x = TRUE)
+  
+  US_counties_v_2[, a := 675 * 10^(-9) * annual_heat_index^3 - 771 * 10^(-7) * annual_heat_index^2 + 1792 * 10^(-5) * annual_heat_index + 0.49239]
+  
+  # joined_weather_SPEI <- merge(US_counties_v_1, US_counties_v_2, by = c("year", "NAME", "STATE_NAME"), all.x = TRUE)
+  US_counties_v_2[, PET := ifelse(Tavg <= 0, 0, 16 * ((10 * Tavg) / annual_heat_index) ^ a)]
+  US_counties_v_2[, D := PET - ppt]
+  
+  # joined_weather_SPEI[, Tavg := (tmax + tmin) / 2]
+  US_counties_v_2[, GDD := fifelse(Tavg < temp_base, 0,
+                                   fifelse(Tavg > temp_up, temp_up - temp_base,
+                                           Tavg - temp_base))]
+  
+  US_counties_v_2[, EDD := fifelse(tmax > temp_up, tmax - temp_up, 0)]
+  
+   # if (scenario == "8.5") {
+   #      US_counties_v_2[, GDD := GDD - 0.5 * EDD]  } # Adjust GDD by subtracting EDD for RCP 8.5
+    joined_weather <- US_counties_v_2[, .(
+    monthly_D = sum(D, na.rm = TRUE),
+    monthly_GDD = sum(GDD, na.rm = TRUE),
+    monthly_EDD = sum(EDD, na.rm = TRUE),
+    monthly_ppt = sum(ppt, na.rm = TRUE),
+    monthly_tmin = mean(tmin, na.rm = TRUE),
+    monthly_tmax = mean(tmax, na.rm = TRUE)
+  ), by = .(year, month, NAME, STATE_NAME)]
+    
+  cat("\nDone Phase 3")
+      
+  return(joined_weather)
+}
+
+
+# 2. Function to run through all realizations
+process_cmip5_realization <- function(realization, base_dir, output_dir, temp_base = 12, temp_up = 31) {
+  
+  # Construct file paths dynamically based on realization number
+  tmax_4.5 <- rast(file.path(base_dir, sprintf("r%02d/tasmax_Amon_CanESM5_rcp45-cmip5_r%di1p1f1_gn_200601-210012.nc", realization, realization)))
+  tmin_4.5 <- rast(file.path(base_dir, sprintf("r%02d/tasmin_Amon_CanESM5_rcp45-cmip5_r%di1p1f1_gn_200601-210012.nc", realization, realization)))
+  pr_4.5   <- rast(file.path(base_dir, sprintf("r%02d/pr_Amon_CanESM5_rcp45-cmip5_r%di1p1f1_gn_200601-210012.nc", realization, realization)))
+
+  tmax_8.5 <- rast(file.path(base_dir, sprintf("r%02d/tasmax_Amon_CanESM5_rcp85-cmip5_r%di1p1f1_gn_200601-210012.nc", realization, realization)))
+  tmin_8.5 <- rast(file.path(base_dir, sprintf("r%02d/tasmin_Amon_CanESM5_rcp85-cmip5_r%di1p1f1_gn_200601-210012.nc", realization, realization)))
+  pr_8.5   <- rast(file.path(base_dir, sprintf("r%02d/pr_Amon_CanESM5_rcp85-cmip5_r%di1p1f1_gn_200601-210012.nc", realization, realization)))
+
+  # Process CMIP5 data for each scenario
+  file_45 <- process_cmip6_data(tmax_4.5, tmin_4.5, pr_4.5, "4.5", temp_base, temp_up)
+  file_85 <- process_cmip6_data(tmax_8.5, tmin_8.5, pr_8.5, "8.5", temp_base, temp_up)
+
+
+  # Save results with realization number
+  saveRDS(file_45, file.path(output_dir, sprintf("Weather_r%02d_4.5.rds", realization)))
+  cat("\nFinished phase 4")
+  saveRDS(file_85, file.path(output_dir, sprintf("Weather_r%02d_8.5.rds", realization)))
+  cat("\nFinished phase 5")
+
+  cat(sprintf("Processed and saved results for realization r%02d\n", realization))
+}
+
+# Example Usage: Run for multiple realizations
+base_dir <- "/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2"
+output_dir <- "/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2"
+for (r in 1:10) {
+  folder <- file.path(base_dir, sprintf("r%02d", r))
+  files  <- list.files(folder, pattern = "tasmax")
+  cat("Realization", r, ":", files, "\n")
+}
+
+
+# Run the function for realizations 1 through 10
+for (realization in 1:10) {
+  process_cmip5_realization(realization, base_dir, output_dir)
+}
+
+# data_2 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/Weather_r01_4.5.rds")
+# data_3 <- readRDS("/Volumes/Extreme SSD/UNL/DWFI/Drought/data/Climate_Projection_2/Weather_r01_8.5.rds")
+
+
+```
+
+
+### 7.Retrieve USDM data
+
+```{r}
+
+USDM_data_weekly <- read.csv("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/data/dm_export_20000101_20260126.csv")
+USDM_data_weekly2 <- USDM_data_weekly %>%
+  mutate(
+    state  = state_names[State],          # if State is an abbreviation like "AK"
+    region = state_to_region(state),
+    date   = ymd(MapDate),
+    month  = month(date),
+    year   = year(date)
+  ) %>%
+  left_join(region_grazing_months, by = "region") %>% na.omit()
+
+
+USDM_annual <- USDM_data_weekly2 %>%
+  filter(month >= start_month & month <= end_month) %>%
+  group_by(County, state, year) %>%
+  summarise(
+    D0_weeks = sum(D0/100, na.rm = TRUE),
+    D1_weeks = sum(D1/100, na.rm = TRUE),
+    D2_weeks = sum(D2/100, na.rm = TRUE),
+    D3_weeks = sum(D3/100, na.rm = TRUE),
+    D4_weeks = sum(D4/100, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+USDM_annual$county <- tolower(USDM_annual$County)
+USDM_annual$state <- tolower(USDM_annual$state)
+USDM_annual$county <- trimws(gsub("\\s+county\\b", "", tolower(USDM_annual$County)))
+
+
+```
+
+
+### 8.Retrieve PSDI data
+
+```{r}
+
+counties_us <- counties(cb = TRUE, year = 2022, class = "sf") %>%
+  st_transform(4326) %>%
+  filter(!STATEFP %in% c("02", "15", "72")) %>%  # remove AK, HI, Puerto Rico
+  mutate(
+    fips = GEOID,
+    county_name = NAME,
+    statefp = STATEFP
+  ) %>%
+  select(fips, statefp, county_name, geometry)
+
+
+get_county_pdsi_year <- function(year) {
+  message("Processing year: ", year)
+  
+  url <- paste0(
+    "https://climate.northwestknowledge.net/TERRACLIMATE-DATA/",
+    "TerraClimate_pdsi_", year, ".nc"
+  )
+  
+  nc_file <- file.path(tempdir(), paste0("TerraClimate_pdsi_", year, ".nc"))
+  
+  if (!file.exists(nc_file)) {
+    download.file(url, nc_file, mode = "wb")
+  }
+  
+  r <- rast(nc_file)
+  
+  # Make sure raster layers have clear month names
+  names(r) <- paste0("pdsi_", sprintf("%02d", 1:nlyr(r)))
+  
+  # Convert counties to same CRS as raster
+  counties_raster_crs <- st_transform(counties_us, crs(r))
+  
+  # Crop raster to counties
+  r_us <- crop(r, vect(counties_raster_crs))
+  
+  # Extract county-level monthly means
+  extracted <- exact_extract(r_us, counties_raster_crs, "mean")
+  
+  # Force extracted columns to month names
+  names(extracted) <- paste0("pdsi_", sprintf("%02d", 1:ncol(extracted)))
+  
+  county_monthly <- bind_cols(
+    st_drop_geometry(counties_us),
+    as_tibble(extracted)
+  ) %>%
+    pivot_longer(
+      cols = starts_with("pdsi_"),
+      names_to = "month",
+      values_to = "pdsi"
+    ) %>%
+    mutate(
+      year = year,
+      month = as.integer(str_remove(month, "pdsi_"))
+    )
+  
+  return(county_monthly)
+}
+
+pdsi_county_monthly <- map_dfr(1981:2022, get_county_pdsi_year)
+
+pdsi_county_monthly_clean <- pdsi_county_monthly %>%
+  mutate(
+    statefp = substr(fips, 1, 2)
+  ) %>%
+  left_join(
+    tigris::fips_codes %>%
+      distinct(state_code, state_name),
+    by = c("statefp" = "state_code")
+  ) %>%
+  rename(
+    state = state_name,
+    county = county_name,
+    index = pdsi
+  ) %>%
+  select(state, county, year, month, index)
+
+pdsi_county_monthly_clean$state <- tolower(pdsi_county_monthly_clean$state)
+pdsi_county_monthly_clean$county <- tolower(pdsi_county_monthly_clean$county)
+write_csv(pdsi_county_monthly_clean, "/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/PDSI_1981_2022_monthly.csv")
+
+```
+
+
+
+
+

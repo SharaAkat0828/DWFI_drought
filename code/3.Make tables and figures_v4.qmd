@@ -1,0 +1,657 @@
+---
+title: "Tables and Figures"
+format: html
+editor: visual
+---
+
+### ==============================================
+
+### Visualization and Results
+
+### This script generates figures and tables for the paper:
+
+### Figure 1. Annual US national beef cow inventory and pastureland data.
+
+### Figure 2. Projected cattle stocking rates (2023-2099).
+
+### Figure 3. County level SR for 2023/2090 (map).
+
+### Appendix C figures (C1, C2, C3)
+
+### Table 2. Stocking rate by US geographical regions, 1982-2022s.
+
+### Table 3. Summary table of all variables
+
+### Table 4. Regression analysis results for delayed drought effects.
+
+### Table 5. PDSI and USDM regression results 
+
+### Table B1. Correlation matrix for variables used in the stocking rate regression model.
+
+### ===============================================
+
+
+### Figure 1. Annual US national beef cow inventory and pastureland data.
+
+```{r}
+
+# Create ANNUAL pastureland and cattle inventory data - ALL US
+merged_ALL_national <- merged_ALL %>% 
+  group_by(year) %>%
+  summarise(
+    pastureland_all_types = sum(pastureland_all_types, na.rm = TRUE),
+     beef_inv = sum(beef_inv, na.rm = TRUE)
+  )
+
+merged_ALL_national$beef_inv <- merged_ALL_national$beef_inv/1000000
+merged_ALL_national$pastureland_all_types <- merged_ALL_national$pastureland_all_types/1000000
+scaling_factor <- max(merged_ALL_national$pastureland_all_types) / max(merged_ALL_national$beef_inv)
+
+merged_ALL_national <- merged_ALL_national %>% 
+  filter(year != 1978)
+
+ggplot() +
+  geom_line(data = merged_ALL_national, aes(x = year, y = beef_inv, color = "Beef cow inventory, head")) +  # Assign legend label
+  geom_line(data = merged_ALL_national, aes(x = year, y = pastureland_all_types / scaling_factor, color = "Pastureland (all), acres")) +  # Assign legend label and scaling factor
+  xlab("Year") + 
+  theme_bw() + 
+  labs(title = "") + 
+  # ylab("Steer, live finishing weight (lbs)") +
+  scale_x_continuous(breaks = seq(min(merged_ALL_national$year), max(merged_ALL_national$year), by = 5)) +  # Show year as numeric on x-axis
+  scale_y_continuous(
+    name = "Beef cow inventory, head (mln)",
+    sec.axis = sec_axis(~ . * scaling_factor, name = "Pastureland (all), acres (mln)")  # Multiply back the scaled beef_head for the secondary y-axis
+  ) +
+  scale_color_manual(values = c("Beef cow inventory, head" = "black", "Pastureland (all), acres" = "red"),  # Manually assign colors
+                     name = "") +  # Legend title
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 10),
+        axis.title.y = element_text(size = 10),
+        axis.title.y.right = element_text(size = 10),  
+        axis.text.y = element_text(size = 10),
+        legend.position = c(0.8, 0.8),  # Position the legend inside the plot at coordinates (0.2, 0.8)
+        legend.background = element_rect(fill = alpha('white', 0.5)),
+        legend.text = element_text(size = 12),  # Set legend text size
+        legend.title = element_text(size = 14))   # Make legend background semi-transparent
+
+```
+
+### Figure 2. Projected cattle stocking rates (2020-2099).
+
+```{r}
+
+# FIGURE 2
+ggplot(average_stock_rate_US, 
+       aes(x = year, y = mean_projected_stock_rate, color = scenario, fill = scenario)) +
+  
+  geom_ribbon(
+    aes(ymin = ci_lower, ymax = ci_upper),
+    alpha = 0.2,
+    color = NA
+  ) +
+  
+  geom_smooth(
+    se = FALSE,
+    method = "loess",
+    span = 0.35,
+    linewidth = 1.5
+  ) +
+  
+  labs(
+    x = "Year",
+    y = "Projected Stock Rate",
+    color = "Scenario",
+    fill = "Scenario"
+  ) +
+  
+  scale_color_manual(values = c("RCP4.5" = "blue", "RCP8.5" = "red")) +
+  scale_fill_manual(values = c("RCP4.5" = "blue", "RCP8.5" = "red")) +
+  
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+   
+
+```
+
+
+### Figure 3. County level SR for 2022/2099 (map).
+
+```{r}
+
+# FIGURE 3
+options(tigris_use_cache = TRUE)
+map_input <- combined_data %>%
+  filter(year %in% c(2023, 2090)) %>%
+  group_by(county, state, year, scenario) %>%
+  summarise(
+    SR_hat = mean(SR_hat, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  # Clean scenario labels for facet strips
+  mutate(
+    scenario = recode(scenario,
+      "RCP 4.5" = "RCP 4.5",
+      "RCP 8.5" = "RCP 8.5"
+    )
+  )
+
+us_counties <- counties(cb = TRUE, year = 2022, class = "sf") %>%
+  mutate(
+    state  = tolower(STATE_NAME),
+    county = tolower(NAME)
+  )
+us_states <- states(cb = TRUE, year = 2022, class = "sf")
+
+map_data <- us_counties %>%
+  left_join(map_input, by = c("state", "county")) %>%
+  filter(!is.na(year), !is.na(scenario))
+
+map_data$stock_bin <- cut(
+  map_data$SR_hat,
+  breaks = c(0, 0.01, 0.02, 0.03, 0.04, 0.06, 0.08, 0.11, Inf),
+  labels = c("0–0.01", "0.011–0.02", "0.021–0.03", "0.031–0.04", "0.041–0.06",
+             "0.061–0.08", "0.081–0.10", ">0.11"),
+  include.lowest = TRUE,
+  right = TRUE
+)
+
+# Color scale: light = low stocking (arid West), dark = high stocking (SE)
+sr_colors <- c(
+  "0–0.01"    = "#4d0000",   # very light cream
+  "0.011–0.02" = "#b30000",   # light orange
+  "0.021–0.03" = "red",   # light orange
+  "0.031–0.04" = "#e34a33",   # light orange
+  "0.041–0.06" = "#fc8d59",   # orange        — modal range
+  "0.061–0.08" = "#fee08b",   # orange-red
+  "0.081–0.10" = "yellow",   # red
+  ">0.11"    = "green"    # very dark red  — high stocking SE/Appalachia
+)
+
+p_levels <- ggplot(map_data) +
+  geom_sf(aes(fill = stock_bin), color = NA) +
+  geom_sf(data = us_states, fill = NA, color = "black",
+          linewidth = 0.15) +
+  scale_fill_manual(
+    values   = sr_colors,
+    name     = "Stocking Rate\n(AUY/acre)",
+    drop     = FALSE,
+    na.value = "gray85"
+  ) +
+  facet_grid(year ~ scenario) +
+  coord_sf(
+    xlim   = c(-125, -66.5),
+    ylim   = c(24, 50),
+    expand = FALSE
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text        = element_blank(),
+    axis.ticks       = element_blank(),
+    panel.grid       = element_blank(),
+    axis.title       = element_blank(),
+    strip.text       = element_text(size = 16, face = "bold"),
+    legend.title     = element_text(size = 16, face = "bold"),
+    legend.text      = element_text(size = 16),
+    legend.position  = "right",
+    legend.key.width = unit(0.8, "cm"),
+    plot.margin      = margin(5, 5, 5, 5)
+  )
+
+
+pct_data <- map_input %>%
+  pivot_wider(
+    names_from  = year,
+    values_from = SR_hat,
+    names_prefix = "yr_"
+  ) %>%
+  mutate(
+    perc_change = 100 * (yr_2099 - yr_2023) / yr_2023
+  ) %>%
+  filter(!is.na(perc_change))
+
+map_pct <- us_counties %>%
+  left_join(pct_data, by = c("state", "county")) %>%
+  filter(!is.na(scenario))
+
+map_pct$perc_bin <- cut(
+  map_pct$perc_change,
+  breaks = c(-Inf, -50, -25, 0, 25, Inf),
+  labels = c("<-50%", "-50% to -25%", "-25% to 0%",
+             "0% to 25%", ">25%"),
+  include.lowest = TRUE,
+  right = FALSE
+)
+
+pct_colors <- c(
+  "<-50%"        = "#67000d",   # very dark red
+  "-50% to -25%" = "#cb181d",   # red
+  "-25% to 0%"   = "#fb6a4a",   # light red-orange
+  "0% to 25%"    = "#fdcc8a",
+  ">25%" = "green"
+)
+
+p_change <- ggplot(map_pct) +
+  geom_sf(aes(fill = perc_bin), color = NA) +
+  geom_sf(data = us_states, fill = NA, color = "black",
+          linewidth = 0.25) +
+  scale_fill_manual(
+    values   = pct_colors,
+    name     = "% Change in\nStocking Rate",
+    drop     = FALSE,
+    na.value = "gray85"
+  ) +
+  facet_wrap(~ scenario, nrow = 1) +
+  coord_sf(
+    xlim   = c(-125, -66.5),
+    ylim   = c(24, 50),
+    expand = FALSE
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text        = element_blank(),
+    axis.ticks       = element_blank(),
+    panel.grid       = element_blank(),
+    axis.title       = element_blank(),
+    strip.text       = element_text(size = 16, face = "bold"),
+    legend.title     = element_text(size = 16, face = "bold"),
+    legend.text      = element_text(size = 16),
+    legend.position  = "right",
+    legend.key.width = unit(0.8, "cm"),
+    plot.margin      = margin(5, 5, 5, 5)
+  )
+
+p_levels
+p_change
+
+```
+
+
+### Appendix C figures (C1, C2, C3)
+
+```{r}
+
+# C1
+p_GDD <- ggplot(all_r_full, aes(x = year, y = mean_GDD, color = scenario)) +
+  geom_line(linewidth = 0.8, alpha = 0.6) +
+  geom_smooth(se = FALSE, method = "loess", span = 0.3, linewidth = 1.5) +
+  scale_color_manual(values = c("RCP4.5" = "steelblue", "RCP8.5" = "red3")) +
+  labs(
+    title    = "Growing Degree Days (GDD) by Scenario",
+    subtitle = "Higher GDD = more beneficial heat accumulation = higher stocking rate",
+    x = "Year", y = "Mean GDD (degree-days)",
+    color = "Scenario",
+    caption = paste0(
+      "GDD base = 15°C, cap = 31°C. Averaged across 10 realizations.\n",
+      "RCP 8.5 higher GDD early explains near-term SR advantage.\n",
+      "RCP 4.5 GDD plateaus mid-century — explains SR stabilization."
+    )
+  ) +
+  theme_classic(base_size = 12) +
+  theme(plot.caption = element_text(size = 8, color = "gray40"))
+print(p_GDD)
+
+
+# C2
+p_EDD <- ggplot(all_r_full, aes(x = year, y = mean_EDD, color = scenario)) +
+  geom_line(linewidth = 0.8, alpha = 0.6) +
+  geom_smooth(se = FALSE, method = "loess", span = 0.3, linewidth = 1.5) +
+  scale_color_manual(values = c("RCP4.5" = "steelblue", "RCP8.5" = "red3")) +
+  labs(
+    title    = "Extreme Degree Days (EDD) by Scenario",
+    subtitle = "Higher EDD = more damaging heat = lower stocking rate",
+    x = "Year", y = "Mean EDD (degree-days above 31°C)",
+    color = "Scenario",
+    caption = paste0(
+      "EDD threshold = 31°C (empirically estimated from hay yield analysis).\n",
+      "RCP 4.5 EDD stabilizes after ~2050 — explains why SR plateaus.\n",
+      "RCP 8.5 EDD accelerates — explains persistent SR decline."
+    )
+  ) +
+  theme_classic(base_size = 12) +
+  theme(plot.caption = element_text(size = 8, color = "gray40"))
+print(p_EDD)
+
+
+
+# C3
+p_D <- ggplot(all_r_full, aes(x = year, y = mean_D, color = scenario)) +
+  geom_line(linewidth = 0.8, alpha = 0.6) +
+  geom_smooth(se = FALSE, method = "loess", span = 0.3, linewidth = 1.5) +
+  scale_color_manual(values = c("RCP4.5" = "steelblue", "RCP8.5" = "red3")) +
+  labs(
+    title    = "Water Deficit (D) by Scenario",
+    subtitle = "Higher D = greater drought stress = lower stocking rate",
+    x = "Year", y = "Mean Water Deficit (mm)",
+    color = "Scenario",
+    caption = "Positive D = moisture deficit. Averaged across 10 realizations."
+  ) +
+  theme_classic(base_size = 12) +
+  theme(plot.caption = element_text(size = 8, color = "gray40"))
+print(p_D)
+
+```
+
+
+### Table 2. Stocking rate by US geographical regions, 1982-2022s.
+
+```{r}
+
+# TABLE 2
+merged_ALL_regional_SR <- regional_SR %>%
+  filter(is.finite(stock_rate_AUY_regional)) %>%   # fixed: correct column name
+  mutate(decade = floor(year / 10) * 10)
+
+summary_table <- merged_ALL_regional_SR %>%
+  group_by(region, decade) %>%
+  summarize(
+    avg_stock_rate = weighted.mean(stock_rate_AUY_regional,    # fixed: correct column
+                                   w    = total_pastureland,   # weight by pastureland size
+                                   na.rm = TRUE),
+    .groups = "drop"
+  )
+
+summary_table_wide <- summary_table %>%
+  pivot_wider(
+    names_from  = decade,
+    values_from = avg_stock_rate,
+    names_prefix = "Decade_"
+  ) %>%
+  mutate(
+    change_1990_1980 = ((Decade_1990 - Decade_1980) / Decade_1980) * 100,
+    change_2000_1990 = ((Decade_2000 - Decade_1990) / Decade_1990) * 100,
+    change_2010_2000 = ((Decade_2010 - Decade_2000) / Decade_2000) * 100,
+    change_2020_2010 = ((Decade_2020 - Decade_2010) / Decade_2010) * 100
+  )
+
+# National average — aggregate from totals, not average of regional rates
+national_avg <- merged_ALL_regional_SR %>%
+  group_by(decade) %>%
+  summarize(
+    avg_stock_rate = sum(total_AUs * (avg_grazing_months / 12), na.rm = TRUE) /
+                     sum(total_pastureland, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from  = decade,
+    values_from = avg_stock_rate,
+    names_prefix = "Decade_"
+  ) %>%
+  mutate(
+    region           = "National Avg",
+    change_1990_1980 = ((Decade_1990 - Decade_1980) / Decade_1980) * 100,
+    change_2000_1990 = ((Decade_2000 - Decade_1990) / Decade_1990) * 100,
+    change_2010_2000 = ((Decade_2010 - Decade_2000) / Decade_2000) * 100,
+    change_2020_2010 = ((Decade_2020 - Decade_2010) / Decade_2010) * 100
+  )
+
+final_table <- bind_rows(summary_table_wide, national_avg) %>%
+  mutate(across(where(is.numeric), ~ round(., 4)))
+
+ft <- flextable(data = final_table)
+ft
+
+```
+
+### Table 3. Summary table of all variables
+
+```{r}
+
+# TABLE 3
+SR_data <- merged_ALL_SR %>%
+  filter(
+    is.finite(stock_rate_AUY),
+    stock_rate_AUY <= 10
+  )
+
+summary_data <- left_join(drought_final, hay_all_stocks_1000t, 
+                           by = c("year", "state")) %>%
+  left_join(SR_data, by = c("year", "state", "county")) %>%
+  na.omit()
+
+table3 <- summary_data %>%
+  ungroup() %>%
+  summarise(
+    across(
+      c(stock_rate_AUY, total_D, total_GDD, total_EDD, hay_stock_1000t),
+      list(
+        Mean    = ~mean(.x, na.rm = TRUE),
+        Std.Dev = ~sd(.x,   na.rm = TRUE),
+        Min     = ~min(.x,  na.rm = TRUE),
+        Max     = ~max(.x,  na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    ),
+    Obs = n()
+  )
+
+table3
+```
+
+### Table 4. Regression analysis results for delayed drought effects.
+
+```{r}
+
+# TABLE 4
+county_fe <- "county"
+year_fe   <- "year"
+state_fe <- "state"
+region_fe <- "region"
+FE        <- paste(county_fe, year_fe, sep = " + ")  
+# Options:
+# FE <- "county"            # County FE only
+# FE <- "year"              # Year FE only  
+# FE <- "county + year"     # County + Year FE (preferred)
+
+model_formulas <- list(
+  m1 = as.formula(paste("log(stock_rate_AUY) ~ total_D |", FE)),
+  m2 = as.formula(paste("log(stock_rate_AUY) ~ total_D + drought_lag1 |", FE)),
+  m3 = as.formula(paste("log(stock_rate_AUY) ~ total_D + drought_lag1 + total_GDD |", FE)),
+  m4 = as.formula(paste("log(stock_rate_AUY) ~ total_D + drought_lag1 + total_GDD + total_EDD |", FE)),
+  m5 = as.formula(paste("log(stock_rate_AUY) ~ total_D + drought_lag1 + total_GDD + total_EDD + hay_stock_1000t_lagged |", FE)),
+  m6 = as.formula(paste("log(stock_rate_AUY) ~ total_D + drought_lag1 + total_GDD + total_EDD + neighbor_avg_hay_stock_1000t_lagged |", FE))
+)
+
+model_data <- list(
+  m1 = regression_data_lagged,
+  m2 = regression_data_lagged,
+  m3 = regression_data_lagged,
+  m4 = regression_data_lagged,
+  m5 = regression_data_lagged,
+  m6 = regression_data_lagged_neighbour
+)
+
+regs <- mapply(
+  FUN      = function(formula, data) {
+    feols(formula, data = data, cluster = ~county)
+  },
+  formula  = model_formulas,
+  data     = model_data,
+  SIMPLIFY = FALSE
+)
+
+do.call(etable, c(
+  regs,
+  list(
+    digits   = 4,
+    se.below = TRUE,
+    signif.code = c("***" = 0.01, "**" = 0.05, "*" = 0.1),
+    headers  = list("(1)" = 1, "(2)" = 1, "(3)" = 1,
+                    "(4)" = 1, "(5)" = 1, "(6)" = 1)
+  )
+))
+
+
+```
+
+
+### Table 5. PDSI and USDM regression results 
+
+```{r}
+
+# TABLE 5
+PDSI_monthly <- read.csv("/Users/sharaakat/Dropbox/akat_shara/DWFI_drought/PDSI_1981_2022_monthly.csv")
+region_grazing_months <- data.frame(
+  region      = c("Appalachia", "Corn Belt", "Delta States", "Lake States",
+                  "Mountain", "Northeast", "Northern Plains",
+                  "Pacific", "Southeast", "Southern Plains"),
+  start_month = c(3, 4, 4, 4, 4, 4, 4, 3, 2, 4),
+  end_month   = c(10, 10, 10, 9, 9, 9, 10, 10, 10, 10)
+)
+
+
+PDSI_grazing <- PDSI_monthly %>%
+  mutate(state = tolower(state), county = tolower(county)) %>%
+  mutate(region = state_to_region(state)) %>%
+  left_join(region_grazing_months, by = "region") %>%
+  filter(!is.na(region),
+         month >= start_month,
+         month <= end_month)
+
+
+PDSI_annual <- PDSI_grazing %>%
+  group_by(state, county, year) %>%
+  summarise(
+    pdsi_mean = mean(index, na.rm = TRUE),   # mean PDSI over grazing season
+    .groups   = "drop"
+  )
+
+
+# Dataset A: USDM merge
+USDM_reg <- regression_data_lagged %>%
+  left_join(
+    USDM_annual %>% mutate(state = tolower(state), county = tolower(county)),
+    by = c("state", "county", "year")
+  ) %>%
+  filter(year >= 2002, year <= 2022) %>%
+  filter(!is.na(D0_weeks), !is.na(stock_rate_AUY))
+
+
+PDSI_reg <- regression_data_lagged %>%
+  left_join(PDSI_annual, by = c("state", "county", "year")) %>%
+  filter(year >= 1981, year <= 2022) %>%
+  filter(!is.na(pdsi_mean), !is.na(stock_rate_AUY))
+
+m_usdm1 <- feols(
+  log(stock_rate_AUY) ~
+    D0_weeks + D1_weeks + D2_weeks + D3_weeks + D4_weeks |
+    county + year,
+  data    = USDM_reg,
+  cluster = ~county
+)
+
+m_usdm2 <- feols(
+  log(stock_rate_AUY) ~
+    D0_weeks + D1_weeks + D2_weeks + D3_weeks + D4_weeks +
+    hay_stock_1000t_lagged |
+    county + year,
+  data    = USDM_reg,
+  cluster = ~county
+)
+
+m_usdm3 <- feols(
+  log(stock_rate_AUY) ~
+    D0_weeks + D1_weeks + D2_weeks + D3_weeks + D4_weeks +
+    hay_stock_1000t_lagged +
+    total_GDD + total_EDD |     # NO total_D — USDM already captures drought
+    county + year,
+  data    = USDM_reg,
+  cluster = ~county
+)
+
+# Col 4: Main model spec on USDM sample — direct apples-to-apples comparison
+m_weather_usdmsample <- feols(
+  log(stock_rate_AUY) ~
+    total_D + drought_lag1 + total_GDD + total_EDD +
+    hay_stock_1000t_lagged |
+    county + year,
+  data    = USDM_reg,
+  cluster = ~county
+)
+
+
+m_pdsi1 <- feols(
+  log(stock_rate_AUY) ~
+    pdsi_mean |
+    county + year,
+  data    = PDSI_reg,
+  cluster = ~county
+)
+
+m_pdsi2 <- feols(
+  log(stock_rate_AUY) ~
+    pdsi_mean +
+    hay_stock_1000t_lagged |
+    county + year,
+  data    = PDSI_reg,
+  cluster = ~county
+)
+
+m_pdsi3 <- feols(
+  log(stock_rate_AUY) ~
+    pdsi_mean +
+    hay_stock_1000t_lagged +
+    total_GDD + total_EDD |
+    county + year,
+  data    = PDSI_reg,
+  cluster = ~county
+)
+
+
+etable(
+  list(m_usdm1, m_usdm2, m_usdm3, m_weather_usdmsample,
+       m_pdsi1, m_pdsi2, m_pdsi3),
+  se          = "cluster",
+  signif.code = c("***" = 0.01, "**" = 0.05, "*" = 0.1),
+  keep_raw    = c("D0_weeks", "D1_weeks", "D2_weeks", "D3_weeks", "D4_weeks",
+                  "hay_stock_1000t_lagged", "total_D", "drought_lag1",
+                  "total_GDD", "total_EDD", "pdsi_mean"),
+  dict        = c(
+    D0_weeks               = "# weeks in D0",
+    D1_weeks               = "# weeks in D1",
+    D2_weeks               = "# weeks in D2",
+    D3_weeks               = "# weeks in D3",
+    D4_weeks               = "# weeks in D4",
+    hay_stock_1000t_lagged = "Hay stock_{s,t-1}",
+    total_D                = "D_{ist}",
+    drought_lag1           = "D_{is,t-1}",
+    total_GDD              = "GDD_{ist}",
+    total_EDD              = "EDD_{ist}",
+    pdsi_mean              = "PDSI (grazing season mean)"
+  ),
+  fitstat     = ~ r2 + wr2 + n
+)
+
+
+```
+
+
+### Table B1. Correlation matrix for variables used in the stocking rate regression model.
+
+```{r}
+
+# TABLE A1
+corr_vars <- regression_data_lagged %>%
+  dplyr::select(
+    total_D, drought_lag1,
+    total_GDD, total_EDD,
+    hay_stock_1000t
+  ) %>%
+  na.omit()
+
+# Compute Pearson correlation matrix
+corr_matrix <- round(cor(corr_vars, method = "pearson"), 2)
+
+# Print matrix in console
+View(corr_matrix)
+print(corr_matrix)
+
+
+```
+
+
